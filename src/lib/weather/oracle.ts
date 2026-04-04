@@ -1,0 +1,2 @@
+// Weather oracle — TODO
+export {};
