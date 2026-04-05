@@ -20,6 +20,16 @@ const CLOB_API = process.env.CLOB_API_URL || "https://clob.polymarket.com";
 const CLOB_PROXY = process.env.CLOB_PROXY_URL || ""; // residential proxy for CLOB orders
 const GAMMA_API = process.env.GAMMA_API_URL || "https://gamma-api.polymarket.com";
 
+// Set HTTPS_PROXY globally at module load time — axios respects this
+// Must happen BEFORE any axios import (including from @polymarket/clob-client)
+if (CLOB_PROXY) {
+  process.env.https_proxy = CLOB_PROXY;
+  process.env.http_proxy = CLOB_PROXY;
+  process.env.HTTPS_PROXY = CLOB_PROXY;
+  process.env.HTTP_PROXY = CLOB_PROXY;
+  console.log(`[CLOB] 🌐 Global proxy env set: ${CLOB_PROXY.replace(/:[^:]+@/, ":***@")}`);
+}
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export type TradingMode = "paper" | "live";
