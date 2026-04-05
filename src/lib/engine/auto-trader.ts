@@ -174,6 +174,59 @@ async function executePaperTrade(signal: BtcSignal): Promise<TradeRecord | null>
 
 // ── Live Trading (CLOB) ──────────────────────────────────────────────────────
 
+const POLYMARKET_PROXY = process.env.POLYMARKET_PROXY || "0x999c4Ca086561914928F423090ac2A218f125A61";
+const POLYGON_RPC = process.env.POLYGON_RPC_URL || "https://polygon-bor-rpc.publicnode.com";
+
+// Cache the authenticated CLOB client to avoid re-deriving keys every trade
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let cachedClobClient: any = null;
+let cachedClobClientTimestamp = 0;
+const CLOB_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+async function getAuthenticatedClobClient() {
+  const now = Date.now();
+  if (cachedClobClient && now - cachedClobClientTimestamp < CLOB_CACHE_TTL) {
+    return cachedClobClient;
+  }
+
+  const privateKey = process.env.PRIVATE_KEY;
+  if (!privateKey) throw new Error("PRIVATE_KEY not set");
+
+  const { ClobClient } = await import("@polymarket/clob-client");
+  const { createWalletClient, http } = await import("viem");
+  const { privateKeyToAccount } = await import("viem/accounts");
+  const { polygon } = await import("viem/chains");
+
+  const normalizedKey = privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`;
+  const account = privateKeyToAccount(normalizedKey as `0x${string}`);
+  console.log(`[CLOB] EOA address: ${account.address}`);
+  console.log(`[CLOB] Proxy/funder: ${POLYMARKET_PROXY}`);
+
+  const walletClient = createWalletClient({
+    account,
+    chain: polygon,
+    transport: http(POLYGON_RPC),
+  });
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const tmpClient = new ClobClient(CLOB_API, 137, walletClient as any);
+  console.log("[CLOB] Deriving API credentials...");
+  const creds = await tmpClient.createOrDeriveApiKey();
+  console.log(`[CLOB] Got API key: ${creds.apiKey?.slice(0, 8)}...`);
+
+  // Signature type 2 = GNOSIS_SAFE (Polymarket proxy wallets)
+  // Pass the funder address (proxy wallet) as the 6th argument
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const authedClient = new ClobClient(
+    CLOB_API, 137, walletClient as any, creds, 2, POLYMARKET_PROXY
+  );
+
+  cachedClobClient = authedClient;
+  cachedClobClientTimestamp = now;
+  console.log("[CLOB] Authenticated client ready");
+  return authedClient;
+}
+
 async function executeLiveTrade(signal: BtcSignal): Promise<TradeRecord | null> {
   const tokenInfo = await getMarketTokenInfo(signal.marketId, signal.direction);
   if (!tokenInfo) {
@@ -188,10 +241,8 @@ async function executeLiveTrade(signal: BtcSignal): Promise<TradeRecord | null> 
   }
 
   const betSize = Math.min(signal.recommendedBet, state.bankroll * 0.2);
-  if (betSize < 5) return null; // minimum $5 for live trades
+  if (betSize < 5) return null;
 
-  // For live trading, we need the CLOB client with proper auth.
-  // The private key must be set in PRIVATE_KEY env var.
   const privateKey = process.env.PRIVATE_KEY;
   if (!privateKey) {
     console.error("[AutoTrader] PRIVATE_KEY not set — cannot place live trades");
@@ -199,40 +250,32 @@ async function executeLiveTrade(signal: BtcSignal): Promise<TradeRecord | null> 
   }
 
   try {
-    // Dynamic import to avoid loading heavy deps in paper mode
-    const { ClobClient } = await import("@polymarket/clob-client");
-    const { createWalletClient, http } = await import("viem");
-    const { privateKeyToAccount } = await import("viem/accounts");
-    const { polygon } = await import("viem/chains");
+    const authedClient = await getAuthenticatedClobClient();
 
-    const normalizedKey = privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`;
-    const account = privateKeyToAccount(normalizedKey as `0x${string}`);
-    const walletClient = createWalletClient({
-      account,
-      chain: polygon,
-      transport: http(),
-    });
+    // Use GTC (Good-Til-Cancelled) limit order for better fill rates
+    // FOK cancels immediately if not filled — GTC rests on the book
+    const limitPrice = Math.min(bestAsk, 0.99);
+    const roundedPrice = Math.round(limitPrice / parseFloat(tokenInfo.tickSize)) * parseFloat(tokenInfo.tickSize);
+    const finalPrice = Math.round(roundedPrice * 100) / 100;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const client = new ClobClient(CLOB_API, 137, walletClient as any);
-    const creds = await client.createOrDeriveApiKey();
+    console.log(`[CLOB] Placing GTC order: BUY ${tokenInfo.tokenId.slice(0, 12)}... @ ${finalPrice} size=$${betSize.toFixed(2)} tick=${tokenInfo.tickSize} negRisk=${tokenInfo.negRisk}`);
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const authedClient = new ClobClient(CLOB_API, 137, walletClient as any, creds, 2);
-
-    // Place FOK (fill-or-kill) market order with 2% slippage tolerance
-    const slippagePrice = Math.min(bestAsk * 1.02, 0.99);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const order = await (authedClient as any).createAndPostOrder(
       {
         tokenID: tokenInfo.tokenId,
-        price: Math.round(slippagePrice * 100) / 100,
+        price: finalPrice,
         side: "BUY",
         size: betSize,
       },
       { tickSize: tokenInfo.tickSize, negRisk: tokenInfo.negRisk },
-      "FOK"
+      "GTC" // Good-Til-Cancelled instead of FOK
     );
+
+    console.log(`[CLOB] Order response:`, JSON.stringify(order).slice(0, 300));
+
+    const orderStatus = order?.status || order?.orderStatus || "unknown";
+    const orderId = order?.orderID || order?.id || order?.order_id || "";
 
     const shares = betSize / bestAsk;
     const trade: TradeRecord = {
@@ -242,20 +285,27 @@ async function executeLiveTrade(signal: BtcSignal): Promise<TradeRecord | null> 
       marketQuestion: signal.marketQuestion,
       direction: signal.direction,
       tokenId: tokenInfo.tokenId,
-      entryPrice: Math.round(bestAsk * 1000) / 1000,
+      entryPrice: Math.round(finalPrice * 1000) / 1000,
       size: Math.round(betSize * 100) / 100,
       shares: Math.round(shares * 100) / 100,
       theoreticalProb: signal.theoreticalProb,
       edge: signal.edge,
       lor: signal.lor,
-      status: order.status === "matched" ? "open" : "pending",
+      status: orderStatus === "matched" || orderStatus === "live" ? "open" : "pending",
       mode: "live",
-      orderId: order.orderID,
+      orderId: orderId,
     };
 
+    console.log(`[AutoTrader] ✅ LIVE order placed: ${orderId} status=${orderStatus} on "${signal.marketQuestion.slice(0, 50)}"`);
     return trade;
   } catch (err) {
-    console.error("[AutoTrader] Live trade failed:", err);
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error(`[AutoTrader] ❌ Live trade FAILED: ${errMsg}`);
+    console.error(`[AutoTrader] Market: ${signal.marketId} Token: ${tokenInfo.tokenId}`);
+    // Don't return null silently — log the full error
+    if (err instanceof Error && err.stack) {
+      console.error(err.stack.split("\n").slice(0, 5).join("\n"));
+    }
     return null;
   }
 }
