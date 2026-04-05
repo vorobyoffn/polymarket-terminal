@@ -184,36 +184,29 @@ let cachedClobClient: any = null;
 let cachedClobClientTimestamp = 0;
 const CLOB_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
-// Install global proxy for CLOB API calls
+// Install proxy for axios (used by @polymarket/clob-client internally)
 let proxyInstalled = false;
-function installGlobalProxy() {
+async function installAxiosProxy() {
   if (proxyInstalled || !CLOB_PROXY) return;
   proxyInstalled = true;
 
-  // Set environment variables that many HTTP libraries respect
-  process.env.HTTPS_PROXY = CLOB_PROXY;
-  process.env.HTTP_PROXY = CLOB_PROXY;
-  console.log(`[CLOB] Global proxy installed: ${CLOB_PROXY.replace(/:[^:]+@/, ":***@")}`);
+  try {
+    // Parse proxy URL: http://user:pass@host:port
+    const proxyUrl = new URL(CLOB_PROXY);
+    const { HttpsProxyAgent } = await import("https-proxy-agent");
+    const agent = new HttpsProxyAgent(CLOB_PROXY);
+    const axios = (await import("axios")).default;
 
-  // Also patch globalThis.fetch to use the proxy for CLOB calls
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
-    if (url.includes("clob.polymarket.com")) {
-      try {
-        const { HttpsProxyAgent } = await import("https-proxy-agent");
-        const agent = new HttpsProxyAgent(CLOB_PROXY);
-        const nodeFetch = (await import("node-fetch")).default;
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const resp = await nodeFetch(url, { ...(init as any), agent } as any);
-        return resp as unknown as Response;
-      } catch (e) {
-        console.error("[CLOB] Proxy fetch failed, falling back:", e instanceof Error ? e.message : e);
-        return originalFetch(input, init);
-      }
-    }
-    return originalFetch(input, init);
-  }) as typeof globalThis.fetch;
+    // Set axios defaults to use the proxy agent for ALL requests
+    axios.defaults.httpsAgent = agent;
+    axios.defaults.httpAgent = agent;
+    // Also set proxy: false to prevent axios from trying its own proxy handling
+    axios.defaults.proxy = false;
+
+    console.log(`[CLOB] Axios proxy installed: ${proxyUrl.host} (user: ${proxyUrl.username})`);
+  } catch (e) {
+    console.error("[CLOB] Axios proxy setup failed:", e instanceof Error ? e.message : e);
+  }
 }
 
 async function getAuthenticatedClobClient() {
@@ -225,8 +218,8 @@ async function getAuthenticatedClobClient() {
   const privateKey = process.env.PRIVATE_KEY;
   if (!privateKey) throw new Error("PRIVATE_KEY not set");
 
-  // Install proxy BEFORE importing CLOB client
-  installGlobalProxy();
+  // Install axios proxy BEFORE importing CLOB client
+  await installAxiosProxy();
 
   const { ClobClient } = await import("@polymarket/clob-client");
   const { createWalletClient, http } = await import("viem");
