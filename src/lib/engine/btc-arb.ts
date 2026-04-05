@@ -5,6 +5,21 @@
 import { httpsGet } from "@/lib/utils/https-get";
 import type { PolymarketMarket } from "@/lib/polymarket/types";
 
+// Cloud-friendly fetch with fallback to native https
+async function cloudGet<T>(url: string, timeoutMs = 10000): Promise<T> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return (await res.json()) as T;
+  } catch {
+    // Fallback to httpsGet (works better locally with IPv4 forcing)
+    return httpsGet<T>(url, timeoutMs);
+  }
+}
+
 const GAMMA_API = process.env.GAMMA_API_URL || "https://gamma-api.polymarket.com";
 
 const ANNUAL_VOL = 0.72;  // BTC annualized vol ~72%
@@ -55,8 +70,8 @@ interface BinanceKline {
 
 export async function fetchLiveBtcPrice(): Promise<{ price: number; change24h: number; change1h: number }> {
   const [ticker24h, klines] = await Promise.all([
-    httpsGet<BinanceTicker24h>("https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT", 6000),
-    httpsGet<BinanceKline[]>("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=2", 6000),
+    cloudGet<BinanceTicker24h>("https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT", 6000),
+    cloudGet<BinanceKline[]>("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=2", 6000),
   ]);
   const price = parseFloat(ticker24h.lastPrice);
   const change24h = parseFloat(ticker24h.priceChangePercent);
@@ -172,7 +187,7 @@ function parseYesPrice(market: PolymarketMarket): number | null {
 export async function runBtcArbScan(bankroll: number): Promise<BtcArbResult> {
   const [btcData, rawEvents] = await Promise.all([
     fetchLiveBtcPrice(),
-    httpsGet<Record<string, unknown>[]>(`${GAMMA_API}/events?active=true&closed=false&limit=300`, 15000),
+    cloudGet<Record<string, unknown>[]>(`${GAMMA_API}/events?active=true&closed=false&limit=300`, 15000),
   ]);
 
   const { price: liveBtcPrice, change24h: btcChange24h, change1h: btcChange1h } = btcData;

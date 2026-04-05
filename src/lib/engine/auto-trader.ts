@@ -3,7 +3,16 @@
 // Supports paper trading (simulated) and live trading (Polymarket CLOB).
 
 import { runBtcArbScan, type BtcSignal, type BtcArbResult } from "./btc-arb";
-import { httpsGet } from "@/lib/utils/https-get";
+
+// Cloud-friendly fetch
+async function cloudGet<T>(url: string, timeoutMs = 10000): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const res = await fetch(url, { signal: controller.signal });
+  clearTimeout(timer);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return (await res.json()) as T;
+}
 
 const CLOB_API = process.env.CLOB_API_URL || "https://clob.polymarket.com";
 const GAMMA_API = process.env.GAMMA_API_URL || "https://gamma-api.polymarket.com";
@@ -86,7 +95,7 @@ function genId(): string {
 
 async function getMarketTokenInfo(marketId: string, direction: "BUY_YES" | "BUY_NO"): Promise<MarketTokenInfo | null> {
   try {
-    const market = await httpsGet<Record<string, unknown>>(
+    const market = await cloudGet<Record<string, unknown>>(
       `${GAMMA_API}/markets/${marketId}`,
       8000
     );
@@ -106,7 +115,7 @@ async function getMarketTokenInfo(marketId: string, direction: "BUY_YES" | "BUY_
 
 async function getOrderbookBestPrice(tokenId: string, side: "buy" | "sell"): Promise<number | null> {
   try {
-    const book = await httpsGet<{
+    const book = await cloudGet<{
       bids: { price: string; size: string }[];
       asks: { price: string; size: string }[];
     }>(`${CLOB_API}/book?token_id=${tokenId}`, 6000);
