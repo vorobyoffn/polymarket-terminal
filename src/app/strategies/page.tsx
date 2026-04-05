@@ -31,11 +31,24 @@ interface AutoTraderState {
   totalPnl: number; winRate: number; bankroll: number;
 }
 
+interface SpreadOpp {
+  marketId: string; marketQuestion: string; spread: number; spreadPct: number;
+  midPrice: number; bestBid: number; bestAsk: number; expectedProfit: number; volume24h: number;
+}
+
+interface CopyState {
+  running: boolean; scanCount: number; wallets: { address: string; label: string }[];
+  recentActivity: { walletLabel: string; marketQuestion: string; outcome: string; size: number; price: number }[];
+  signals: { shouldCopy: boolean; activity: { walletLabel: string; marketQuestion: string; size: number; outcome: string } }[];
+}
+
 export default function StrategiesPage() {
   const [expiry, setExpiry] = useState<{ signals: ExpirySignal[]; marketsScanned: number; nearExpiryCount: number } | null>(null);
   const [correlation, setCorrelation] = useState<{ signals: CorrelationSignal[]; eventsScanned: number; multiOutcomeEvents: number } | null>(null);
   const [btcArb, setBtcArb] = useState<BtcArbResult | null>(null);
   const [autoTrader, setAutoTrader] = useState<AutoTraderState | null>(null);
+  const [spreads, setSpreads] = useState<{ opportunities: SpreadOpp[]; marketsScanned: number; wideSpreadCount: number; avgSpread: number } | null>(null);
+  const [copyState, setCopyState] = useState<CopyState | null>(null);
   const [loading, setLoading] = useState(false);
   const [mounted, setMounted] = useState(false);
 
@@ -43,16 +56,20 @@ export default function StrategiesPage() {
 
   const scanAll = useCallback(async () => {
     setLoading(true);
-    const [exRes, corRes, btcRes, atRes] = await Promise.all([
+    const [exRes, corRes, btcRes, atRes, spRes, cpRes] = await Promise.all([
       fetch("/api/expiry-convergence?bankroll=562").then(r => r.ok ? r.json() : null).catch(() => null),
       fetch("/api/correlation-arb").then(r => r.ok ? r.json() : null).catch(() => null),
       fetch("/api/btc-arb?bankroll=562").then(r => r.ok ? r.json() : null).catch(() => null),
       fetch("/api/auto-trade").then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch("/api/spread-capture").then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch("/api/copy-trade").then(r => r.ok ? r.json() : null).catch(() => null),
     ]);
     if (exRes) setExpiry(exRes);
     if (corRes) setCorrelation(corRes);
     if (btcRes) setBtcArb(btcRes);
     if (atRes) setAutoTrader(atRes);
+    if (spRes) setSpreads(spRes);
+    if (cpRes) setCopyState(cpRes);
     setLoading(false);
   }, []);
 
@@ -65,7 +82,7 @@ export default function StrategiesPage() {
 
   if (!mounted) return null;
 
-  const totalSignals = (expiry?.signals.length || 0) + (correlation?.signals.length || 0) + (btcArb?.signals.length || 0);
+  const totalSignals = (expiry?.signals.length || 0) + (correlation?.signals.length || 0) + (btcArb?.signals.length || 0) + (spreads?.wideSpreadCount || 0) + (copyState?.signals.filter(s => s.shouldCopy).length || 0);
   const bestExpiry = expiry?.signals[0];
   const bestCorr = correlation?.signals[0];
 
@@ -229,22 +246,68 @@ export default function StrategiesPage() {
           )}
         </div>
 
-        {/* Coming Soon: More Strategies */}
-        <div className="grid grid-cols-2 gap-4">
-          <div className="border border-border rounded-lg p-4 bg-bg-tertiary/20">
-            <div className="flex items-center gap-2 mb-2">
-              <AlertTriangle className="w-4 h-4 text-accent-yellow/50" />
-              <span className="text-xs font-semibold text-text-secondary">Whale Copy Trading</span>
-            </div>
-            <span className="text-[10px] text-text-muted">Mirror trades from profitable public wallets — coming next</span>
+        {/* Spread Capture Section */}
+        <div className="border border-border rounded-lg overflow-hidden">
+          <div className="px-4 py-2 bg-bg-tertiary/50 border-b border-border flex items-center gap-2">
+            <TrendingUp className="w-4 h-4 text-accent-yellow" />
+            <span className="text-sm font-semibold text-text-primary">Spread Capture</span>
+            <span className="text-[10px] text-text-muted">Wide bid-ask spreads for market making</span>
+            <span className="ml-auto text-[10px] text-accent-yellow font-mono">
+              {spreads?.wideSpreadCount || 0} wide spreads · avg {spreads?.avgSpread || 0}%
+            </span>
           </div>
-          <div className="border border-border rounded-lg p-4 bg-bg-tertiary/20">
-            <div className="flex items-center gap-2 mb-2">
-              <TrendingUp className="w-4 h-4 text-accent-cyan/50" />
-              <span className="text-xs font-semibold text-text-secondary">Spread Capture</span>
+          {spreads && spreads.opportunities.length > 0 ? (
+            <div className="max-h-48 overflow-y-auto">
+              <div className="px-4 py-1.5 grid grid-cols-[2fr_0.5fr_0.5fr_0.5fr_0.5fr_0.5fr] gap-2 text-[9px] text-text-muted uppercase tracking-wider border-b border-border">
+                <span>Market</span><span>Bid</span><span>Ask</span><span>Spread</span><span>Mid</span><span>Profit/$100</span>
+              </div>
+              {spreads.opportunities.slice(0, 10).map((s) => (
+                <div key={s.marketId} className="px-4 py-2 grid grid-cols-[2fr_0.5fr_0.5fr_0.5fr_0.5fr_0.5fr] gap-2 items-center border-b border-border hover:bg-bg-tertiary/30 text-xs">
+                  <span className="text-text-primary truncate">{s.marketQuestion}</span>
+                  <span className="text-accent-green font-mono">{(s.bestBid * 100).toFixed(1)}¢</span>
+                  <span className="text-accent-red font-mono">{(s.bestAsk * 100).toFixed(1)}¢</span>
+                  <span className="text-accent-yellow font-mono">{s.spreadPct.toFixed(1)}%</span>
+                  <span className="text-text-primary font-mono">{(s.midPrice * 100).toFixed(1)}¢</span>
+                  <span className="text-accent-green font-mono">${s.expectedProfit.toFixed(0)}</span>
+                </div>
+              ))}
             </div>
-            <span className="text-[10px] text-text-muted">Market making on wide bid-ask spreads — coming next</span>
+          ) : (
+            <div className="px-4 py-6 text-center text-text-muted text-xs">
+              {loading ? "Scanning orderbooks…" : `${spreads?.marketsScanned || 0} orderbooks checked`}
+            </div>
+          )}
+        </div>
+
+        {/* Copy Trading Section */}
+        <div className="border border-border rounded-lg overflow-hidden">
+          <div className="px-4 py-2 bg-bg-tertiary/50 border-b border-border flex items-center gap-2">
+            <Activity className="w-4 h-4 text-accent-cyan" />
+            <span className="text-sm font-semibold text-text-primary">Whale Copy Trading</span>
+            <span className="text-[10px] text-text-muted">Mirror profitable wallets</span>
+            <span className="ml-auto text-[10px] text-accent-cyan font-mono">
+              {copyState?.wallets.length || 0} wallets · {copyState?.signals.filter(s => s.shouldCopy).length || 0} signals
+            </span>
           </div>
+          {copyState && copyState.recentActivity.length > 0 ? (
+            <div className="max-h-48 overflow-y-auto">
+              <div className="px-4 py-1.5 grid grid-cols-[0.5fr_2fr_0.5fr_0.5fr] gap-2 text-[9px] text-text-muted uppercase tracking-wider border-b border-border">
+                <span>Whale</span><span>Market</span><span>Side</span><span>Size</span>
+              </div>
+              {copyState.recentActivity.slice(0, 10).map((a, i) => (
+                <div key={i} className="px-4 py-2 grid grid-cols-[0.5fr_2fr_0.5fr_0.5fr] gap-2 items-center border-b border-border hover:bg-bg-tertiary/30 text-xs">
+                  <span className="text-accent-cyan font-semibold truncate">{a.walletLabel}</span>
+                  <span className="text-text-primary truncate">{a.marketQuestion}</span>
+                  <span className={`font-bold ${a.outcome === "YES" ? "text-accent-green" : "text-accent-red"}`}>{a.outcome}</span>
+                  <span className="text-text-primary font-mono">${a.size.toFixed(0)}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="px-4 py-6 text-center text-text-muted text-xs">
+              {loading ? "Scanning whale wallets…" : `Monitoring ${copyState?.wallets.length || 0} wallets`}
+            </div>
+          )}
         </div>
       </div>
     </div>
