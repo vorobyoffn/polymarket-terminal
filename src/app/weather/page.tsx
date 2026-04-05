@@ -3,8 +3,8 @@
 import Header from "@/components/layout/Header";
 import {
   CloudRain, RefreshCw, Zap, Thermometer, Wind,
-  Droplets, Sun, Cloud, Target, TrendingUp, Clock,
-  BarChart2, ArrowUp, ArrowDown,
+  Droplets, Sun, Cloud, Clock, Target, TrendingUp,
+  BarChart2, AlertTriangle,
 } from "lucide-react";
 import { useState, useEffect, useCallback } from "react";
 
@@ -12,15 +12,12 @@ interface WeatherSignal {
   marketId: string;
   marketQuestion: string;
   marketPrice: number;
-  weatherForecast: number;
+  forecastProb: number;
   edge: number;
   direction: "BUY_YES" | "BUY_NO";
   ev: number;
-  source: string;
   location: string;
   metric: string;
-  currentValue: number;
-  forecastValue: number;
   confidence: number;
   expiryDate: string;
   daysToExpiry: number;
@@ -32,7 +29,6 @@ interface WeatherData {
   humidity: number;
   windSpeed: number;
   condition: string;
-  description: string;
 }
 
 const CITIES: { name: string; lat: number; lon: number }[] = [
@@ -42,6 +38,12 @@ const CITIES: { name: string; lat: number; lon: number }[] = [
   { name: "Miami", lat: 25.76, lon: -80.19 },
   { name: "London", lat: 51.51, lon: -0.13 },
 ];
+
+// Strict weather/climate keyword matching
+const WEATHER_REGEX = /\b(temperature|degrees|fahrenheit|celsius|heat\s?wave|cold\s?snap|rain(?:fall)?|snow(?:fall)?|hurricane|typhoon|tornado|cyclone|flood(?:ing)?|drought|wildfire|blizzard|frost|ice\s?storm|el\s?ni[nñ]o|la\s?ni[nñ]a|monsoon|hail|thunderstorm|wind\s?(?:speed|chill)|weather\s+event|climate\s+(?:disaster|event|record)|record\s+(?:high|low|heat|cold|temp))\b/i;
+
+// Exclude political/geopolitical markets that contain climate-adjacent words
+const EXCLUDE_REGEX = /\b(election|nato|troops|ukraine|russia|sovereignty|congress|president|vote|war|military|sanctions|ceasefire|treaty|parliament|legislation|government)\b/i;
 
 function WeatherIcon({ condition }: { condition: string }) {
   const c = condition.toLowerCase();
@@ -54,6 +56,8 @@ function WeatherIcon({ condition }: { condition: string }) {
 export default function WeatherArbPage() {
   const [weather, setWeather] = useState<WeatherData[]>([]);
   const [signals, setSignals] = useState<WeatherSignal[]>([]);
+  const [totalScanned, setTotalScanned] = useState(0);
+  const [weatherMatchCount, setWeatherMatchCount] = useState(0);
   const [loading, setLoading] = useState(false);
   const [mounted, setMounted] = useState(false);
 
@@ -62,7 +66,7 @@ export default function WeatherArbPage() {
   const fetchWeather = useCallback(async () => {
     setLoading(true);
     try {
-      // Fetch weather from Open-Meteo (free, no key needed)
+      // Fetch live weather from Open-Meteo
       const results: WeatherData[] = [];
       for (const city of CITIES) {
         try {
@@ -81,44 +85,45 @@ export default function WeatherArbPage() {
               humidity: data.current.relative_humidity_2m,
               windSpeed: Math.round(data.current.wind_speed_10m * 10) / 10,
               condition,
-              description: `${condition}, ${data.current.temperature_2m.toFixed(1)}°C`,
             });
           }
         } catch { /* skip city */ }
       }
       setWeather(results);
 
-      // Fetch weather-related Polymarket markets
-      const mktsRes = await fetch("/api/markets?limit=200");
+      // Fetch ALL Polymarket markets and strictly filter for weather
+      const mktsRes = await fetch("/api/markets?limit=500");
       if (mktsRes.ok) {
-        const events = await mktsRes.json() as { markets?: { id: string; question: string; outcomePrices: string; endDate: string }[] }[];
-        const weatherMarkets = events
-          .flatMap((e) => e.markets || [])
-          .filter((m) => {
-            const q = (m.question || "").toLowerCase();
-            return /temperature|weather|rain|snow|hurricane|tornado|heat|cold|storm|flood|drought|wildfire|climate/.test(q);
-          });
+        const events = await mktsRes.json() as { markets?: { id: string; question: string; outcomePrices: string; endDate: string; active?: boolean; closed?: boolean }[] }[];
+        const allMarkets = events.flatMap((e) => e.markets || []).filter(m => m.active !== false && m.closed !== true);
+        setTotalScanned(allMarkets.length);
 
-        // Generate mock signals based on weather data
-        const sigs: WeatherSignal[] = weatherMarkets.slice(0, 10).map((m, i) => {
+        // Strict weather filtering: must match weather regex AND not match exclusion regex
+        const weatherMarkets = allMarkets.filter((m) => {
+          const q = (m.question || "");
+          return WEATHER_REGEX.test(q) && !EXCLUDE_REGEX.test(q);
+        });
+        setWeatherMatchCount(weatherMarkets.length);
+
+        // Build real signals from actual weather markets
+        const sigs: WeatherSignal[] = weatherMarkets.map((m) => {
           const prices = JSON.parse(m.outcomePrices || "[]") as string[];
           const yesPrice = parseFloat(prices[0] || "0.5");
-          const edge = Math.random() * 0.15 + 0.03;
           const daysToExpiry = Math.ceil((new Date(m.endDate).getTime() - Date.now()) / 86400000);
+
+          // TODO: Build real forecast model based on historical weather data
+          // For now, show the market data without fake forecast
           return {
             marketId: m.id,
             marketQuestion: m.question,
             marketPrice: yesPrice,
-            weatherForecast: yesPrice + (Math.random() > 0.5 ? edge : -edge),
-            edge,
-            direction: Math.random() > 0.5 ? "BUY_YES" as const : "BUY_NO" as const,
-            ev: edge * (Math.random() * 2 + 0.5),
-            source: "Open-Meteo",
-            location: results[i % results.length]?.location || "Unknown",
-            metric: ["Temperature", "Rainfall", "Wind Speed", "Humidity"][i % 4],
-            currentValue: results[i % results.length]?.temp || 0,
-            forecastValue: (results[i % results.length]?.temp || 0) + (Math.random() * 5 - 2.5),
-            confidence: Math.round(Math.random() * 30 + 60),
+            forecastProb: yesPrice, // No forecast model yet
+            edge: 0,
+            direction: "BUY_YES" as const,
+            ev: 0,
+            location: "—",
+            metric: "—",
+            confidence: 0,
             expiryDate: new Date(m.endDate).toISOString().split("T")[0],
             daysToExpiry: Math.max(1, daysToExpiry),
           };
@@ -176,6 +181,73 @@ export default function WeatherArbPage() {
         </div>
       )}
 
+      {/* Stats */}
+      {totalScanned > 0 && (
+        <div className="px-6 py-2 border-b border-border grid grid-cols-4 gap-4 bg-bg-secondary">
+          {[
+            { label: "Markets Scanned", value: totalScanned, icon: BarChart2 },
+            { label: "Weather Markets", value: weatherMatchCount, icon: CloudRain },
+            { label: "Signals", value: signals.filter(s => s.edge > 0.03).length, icon: Target },
+            { label: "Avg Edge", value: signals.length > 0 ? `${(signals.reduce((s, x) => s + x.edge, 0) / signals.length * 100).toFixed(1)}%` : "—", icon: TrendingUp },
+          ].map(({ label, value, icon: Icon }) => (
+            <div key={label} className="flex flex-col">
+              <div className="flex items-center gap-1 text-text-muted text-[10px] uppercase tracking-wider mb-0.5"><Icon className="w-2.5 h-2.5" />{label}</div>
+              <div className="text-text-primary text-sm font-mono font-semibold">{value}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* No weather markets found */}
+      {totalScanned > 0 && weatherMatchCount === 0 && (
+        <div className="flex-1 flex flex-col items-center justify-center gap-4 text-center px-6">
+          <AlertTriangle className="w-12 h-12 text-accent-yellow/40" />
+          <div>
+            <div className="text-text-primary text-sm font-semibold mb-1">No Weather Markets Found</div>
+            <div className="text-text-muted text-xs max-w-md">
+              Scanned {totalScanned} Polymarket markets — none are currently weather/climate related.
+              Polymarket occasionally lists hurricane, temperature record, wildfire, and drought markets.
+              The scanner will find them when they appear.
+            </div>
+          </div>
+          <div className="text-text-muted text-[10px] mt-2">
+            Monitoring for: temperature, rainfall, snow, hurricane, tornado, flood, drought, wildfire, blizzard, heatwave
+          </div>
+        </div>
+      )}
+
+      {/* Weather markets found */}
+      {signals.length > 0 && (
+        <div className="flex-1 overflow-hidden flex flex-col">
+          <div className="px-6 py-2 border-b border-border grid grid-cols-[2.5fr_1fr_1fr_1fr_0.8fr_0.8fr] gap-3 text-[10px] text-text-muted uppercase tracking-wider">
+            <span>Market</span><span>Expiry</span><span>Market Price</span><span>Forecast</span><span>Edge</span><span>Direction</span>
+          </div>
+          <div className="flex-1 overflow-y-auto">
+            {signals.map((s) => (
+              <div key={s.marketId} className="px-6 py-3 border-b border-border grid grid-cols-[2.5fr_1fr_1fr_1fr_0.8fr_0.8fr] gap-3 items-center hover:bg-bg-tertiary/40 transition-colors">
+                <div className="min-w-0">
+                  <div className="text-text-primary text-xs font-medium truncate">{s.marketQuestion}</div>
+                  <div className="text-text-muted text-[10px] flex items-center gap-2 mt-0.5">
+                    <Clock className="w-2.5 h-2.5" />{s.daysToExpiry}d · {s.expiryDate}
+                  </div>
+                </div>
+                <span className="text-xs text-text-secondary font-mono">{s.daysToExpiry}d</span>
+                <span className="text-xs font-mono text-text-primary">{(s.marketPrice * 100).toFixed(1)}¢</span>
+                <span className="text-xs font-mono text-accent-cyan">{s.forecastProb > 0 ? `${(s.forecastProb * 100).toFixed(1)}¢` : "—"}</span>
+                <span className="text-xs font-mono text-accent-yellow">{s.edge > 0 ? `${(s.edge * 100).toFixed(1)}%` : "—"}</span>
+                <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border uppercase ${
+                  s.edge > 0
+                    ? s.direction === "BUY_YES"
+                      ? "bg-accent-green/10 text-accent-green border-accent-green/30"
+                      : "bg-accent-red/10 text-accent-red border-accent-red/30"
+                    : "bg-bg-tertiary text-text-muted border-border"
+                }`}>{s.edge > 0 ? (s.direction === "BUY_YES" ? "YES" : "NO") : "—"}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Empty state */}
       {!loading && signals.length === 0 && weather.length === 0 && (
         <div className="flex-1 flex flex-col items-center justify-center gap-4 text-center px-6">
@@ -183,8 +255,8 @@ export default function WeatherArbPage() {
           <div>
             <div className="text-text-primary text-sm font-semibold mb-1">Weather Arbitrage Scanner</div>
             <div className="text-text-muted text-xs max-w-md">
-              Fetches live weather data from Open-Meteo and compares against Polymarket weather/climate markets
-              to find mispricings based on actual meteorological forecasts.
+              Fetches live weather data from Open-Meteo and scans Polymarket for weather/climate markets
+              (hurricanes, temperature records, wildfires, droughts, etc.) to find mispricings.
             </div>
           </div>
           <button onClick={fetchWeather}
@@ -194,53 +266,7 @@ export default function WeatherArbPage() {
         </div>
       )}
 
-      {/* Signals */}
-      {signals.length > 0 && (
-        <div className="flex-1 overflow-hidden flex flex-col">
-          <div className="px-6 py-2 border-b border-border grid grid-cols-4 gap-4 bg-bg-secondary">
-            {[
-              { label: "Weather Markets", value: signals.length, icon: CloudRain },
-              { label: "Avg Edge", value: `${(signals.reduce((s, x) => s + x.edge, 0) / signals.length * 100).toFixed(1)}%`, icon: Target },
-              { label: "Avg EV", value: `+${(signals.reduce((s, x) => s + x.ev, 0) / signals.length * 100).toFixed(1)}%`, icon: TrendingUp },
-              { label: "Avg Confidence", value: `${Math.round(signals.reduce((s, x) => s + x.confidence, 0) / signals.length)}%`, icon: BarChart2 },
-            ].map(({ label, value, icon: Icon }) => (
-              <div key={label} className="flex flex-col">
-                <div className="flex items-center gap-1 text-text-muted text-[10px] uppercase tracking-wider mb-0.5"><Icon className="w-2.5 h-2.5" />{label}</div>
-                <div className="text-text-primary text-sm font-mono font-semibold">{value}</div>
-              </div>
-            ))}
-          </div>
-
-          <div className="px-6 py-2 border-b border-border grid grid-cols-[2.5fr_1fr_1fr_1fr_0.8fr_0.8fr_0.8fr] gap-3 text-[10px] text-text-muted uppercase tracking-wider">
-            <span>Market</span><span>Location</span><span>Metric</span><span>Market P</span><span>Forecast P</span><span>Edge</span><span>Dir</span>
-          </div>
-
-          <div className="flex-1 overflow-y-auto">
-            {signals.map((s) => (
-              <div key={s.marketId} className="px-6 py-3 border-b border-border grid grid-cols-[2.5fr_1fr_1fr_1fr_0.8fr_0.8fr_0.8fr] gap-3 items-center hover:bg-bg-tertiary/40 transition-colors">
-                <div className="min-w-0">
-                  <div className="text-text-primary text-xs font-medium truncate">{s.marketQuestion}</div>
-                  <div className="text-text-muted text-[10px] flex items-center gap-2 mt-0.5">
-                    <Clock className="w-2.5 h-2.5" />{s.daysToExpiry}d · {s.expiryDate}
-                  </div>
-                </div>
-                <span className="text-xs text-text-secondary">{s.location}</span>
-                <span className="text-xs text-text-secondary">{s.metric}</span>
-                <span className="text-xs font-mono text-text-primary">{(s.marketPrice * 100).toFixed(1)}¢</span>
-                <span className="text-xs font-mono text-accent-cyan">{(s.weatherForecast * 100).toFixed(1)}¢</span>
-                <span className="text-xs font-mono text-accent-yellow">{(s.edge * 100).toFixed(1)}%</span>
-                <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border uppercase ${
-                  s.direction === "BUY_YES"
-                    ? "bg-accent-green/10 text-accent-green border-accent-green/30"
-                    : "bg-accent-red/10 text-accent-red border-accent-red/30"
-                }`}>{s.direction === "BUY_YES" ? "YES" : "NO"}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {loading && signals.length === 0 && (
+      {loading && signals.length === 0 && weather.length === 0 && (
         <div className="flex-1 flex flex-col items-center justify-center gap-3">
           <RefreshCw className="w-8 h-8 text-accent-cyan animate-spin" />
           <div className="text-text-secondary text-sm">Fetching weather data & scanning markets…</div>
