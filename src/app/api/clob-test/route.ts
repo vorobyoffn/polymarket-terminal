@@ -39,9 +39,11 @@ export async function GET() {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const tmpClient = new ClobClient(CLOB_API, 137, walletClient as any);
     const creds = await tmpClient.createOrDeriveApiKey();
-    results.apiKey = creds.apiKey?.slice(0, 12) + "...";
-    results.hasPassphrase = !!creds.passphrase;
-    results.hasSecret = !!creds.secret;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const c = creds as any;
+    results.apiKey = (c.apiKey || c.key || "")?.slice(0, 12) + "...";
+    results.hasPassphrase = !!(c.passphrase);
+    results.hasSecret = !!(c.secret);
 
     // Step 4: Create authenticated client with proxy
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
