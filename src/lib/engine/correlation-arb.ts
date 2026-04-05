@@ -86,12 +86,41 @@ export async function runCorrelationArbScan(): Promise<CorrelationArbResult> {
     if (activeMarkets.length < 2) continue;
     multiOutcomeCount++;
 
+    // Detect if this is a mutually exclusive event (exactly one winner)
+    // Heuristic: events with "Who will", "Which [singular]", "Winner of" in title
+    // are typically mutually exclusive. "Which [plural]" events are NOT.
+    const eventTitle = ((event.title as string) || (event.slug as string) || "").toLowerCase();
+    const isMutuallyExclusive =
+      /who will (?:win|be)\b/.test(eventTitle) ||
+      /winner of/.test(eventTitle) ||
+      /next\s+(?:president|pope|ceo|head|leader|champion)/.test(eventTitle) ||
+      /which (?:party|candidate|person|team|country) will win/.test(eventTitle);
+
+    // Also check: if all markets are binary alternatives of the same question
+    // (e.g., "Team A wins" vs "Team B wins" for a head-to-head match)
+    const isHeadToHead = activeMarkets.length === 2 || activeMarkets.length === 3;
+
+    // For non-mutually-exclusive events (like "Which teams make playoffs"),
+    // sum > 1 is expected and NOT an arb. Skip these.
+    const isLikelyIndependent =
+      /which (?:teams|countries|artists|companies|people|players|stocks|cities)/.test(eventTitle) ||
+      /ipos?\b/.test(eventTitle) ||
+      /who will (?:announce|visit|run|release)/.test(eventTitle) ||
+      activeMarkets.length > 15; // Large groups are almost never mutually exclusive
+
+    if (isLikelyIndependent && !isMutuallyExclusive) continue;
+
     // Sum all YES prices — for mutually exclusive outcomes, should = 1.0
     const sumYes = activeMarkets.reduce((s, m) => s + m.yesPrice, 0);
     const deviation = Math.abs(sumYes - 1.0);
 
-    // Minimum 3% deviation to account for fees + spread
-    if (deviation < 0.03) continue;
+    // For head-to-head (2-3 outcomes), allow tighter threshold
+    // For larger groups, need bigger deviation to be meaningful
+    const minDeviation = isHeadToHead ? 0.03 : 0.05;
+    if (deviation < minDeviation) continue;
+
+    // Sanity check: if sum is way over 2.0, it's likely NOT mutually exclusive
+    if (sumYes > 2.0) continue;
 
     const endDate = (event.endDate as string) || eventMarkets[0]?.endDate as string || "";
     const expiry = new Date(endDate);

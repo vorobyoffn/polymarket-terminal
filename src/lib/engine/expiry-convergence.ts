@@ -85,9 +85,12 @@ interface ParsedMarket {
 function parseMarketQuestion(question: string, endDate: string): ParsedMarket | null {
   const q = question.toLowerCase().replace(/,/g, "");
 
-  // Crypto price markets: "Will BTC/ETH/SOL hit/reach/exceed $X by date?"
+  // Crypto price markets: many patterns
+  // "Will BTC hit $X", "Bitcoin above $X", "BTC price $X or higher", "Bitcoin to reach $X"
   const cryptoAboveMatch = q.match(
-    /(?:will\s+)?(bitcoin|btc|ethereum|eth|solana|sol)\s+(?:hit|reach|exceed|be\s+above|go\s+above|surpass|close\s+above|end\s+above|price\s+above)\s+\$?([\d.]+)(k?)/
+    /(?:will\s+)?(bitcoin|btc|ethereum|eth|ether|solana|sol)\s+(?:hit|reach|exceed|be\s+above|go\s+above|surpass|close\s+above|end\s+above|price\s+above|above|over|at\s+least|higher\s+than|to\s+reach|to\s+hit)\s+\$?([\d.]+)(k?)/
+  ) || q.match(
+    /\$?([\d.]+)(k?)\s+(?:bitcoin|btc|ethereum|eth|solana|sol)/
   );
   if (cryptoAboveMatch) {
     const asset = cryptoAboveMatch[1].replace("bitcoin", "btc").replace("ethereum", "eth").replace("solana", "sol");
