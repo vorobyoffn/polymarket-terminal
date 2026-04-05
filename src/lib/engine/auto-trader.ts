@@ -184,33 +184,36 @@ let cachedClobClient: any = null;
 let cachedClobClientTimestamp = 0;
 const CLOB_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
-// Proxy-aware fetch for CLOB API calls (bypasses Polymarket geo-blocking)
-async function setupProxyFetch(): Promise<typeof globalThis.fetch> {
-  if (!CLOB_PROXY) return globalThis.fetch;
+// Install global proxy for CLOB API calls
+let proxyInstalled = false;
+function installGlobalProxy() {
+  if (proxyInstalled || !CLOB_PROXY) return;
+  proxyInstalled = true;
 
-  try {
-    const { HttpsProxyAgent } = await import("https-proxy-agent");
-    const agent = new HttpsProxyAgent(CLOB_PROXY);
-    console.log(`[CLOB] Using proxy: ${CLOB_PROXY.replace(/:[^:]+@/, ":***@")}`);
+  // Set environment variables that many HTTP libraries respect
+  process.env.HTTPS_PROXY = CLOB_PROXY;
+  process.env.HTTP_PROXY = CLOB_PROXY;
+  console.log(`[CLOB] Global proxy installed: ${CLOB_PROXY.replace(/:[^:]+@/, ":***@")}`);
 
-    // Return a proxied fetch function
-    const http = await import("node:http");
-    const https = await import("node:https");
-
-    return (async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
-      // Only proxy CLOB API calls
-      if (url.includes("clob.polymarket.com")) {
-        const fetchWithAgent = (await import("node-fetch")).default;
+  // Also patch globalThis.fetch to use the proxy for CLOB calls
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
+    if (url.includes("clob.polymarket.com")) {
+      try {
+        const { HttpsProxyAgent } = await import("https-proxy-agent");
+        const agent = new HttpsProxyAgent(CLOB_PROXY);
+        const nodeFetch = (await import("node-fetch")).default;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        return fetchWithAgent(url, { ...init as any, agent } as any) as any;
+        const resp = await nodeFetch(url, { ...(init as any), agent } as any);
+        return resp as unknown as Response;
+      } catch (e) {
+        console.error("[CLOB] Proxy fetch failed, falling back:", e instanceof Error ? e.message : e);
+        return originalFetch(input, init);
       }
-      return globalThis.fetch(input, init);
-    }) as typeof globalThis.fetch;
-  } catch (e) {
-    console.error("[CLOB] Proxy setup failed:", e instanceof Error ? e.message : e);
-    return globalThis.fetch;
-  }
+    }
+    return originalFetch(input, init);
+  }) as typeof globalThis.fetch;
 }
 
 async function getAuthenticatedClobClient() {
@@ -222,15 +225,8 @@ async function getAuthenticatedClobClient() {
   const privateKey = process.env.PRIVATE_KEY;
   if (!privateKey) throw new Error("PRIVATE_KEY not set");
 
-  // Set up proxy if configured
-  if (CLOB_PROXY) {
-    const proxiedFetch = await setupProxyFetch();
-    // Monkey-patch global fetch for CLOB client
-    const origFetch = globalThis.fetch;
-    globalThis.fetch = proxiedFetch;
-    // Will restore after client creation
-    setTimeout(() => { globalThis.fetch = origFetch; }, 30000);
-  }
+  // Install proxy BEFORE importing CLOB client
+  installGlobalProxy();
 
   const { ClobClient } = await import("@polymarket/clob-client");
   const { createWalletClient, http } = await import("viem");
