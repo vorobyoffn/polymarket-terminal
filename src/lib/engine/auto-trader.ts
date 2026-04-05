@@ -185,27 +185,55 @@ let cachedClobClientTimestamp = 0;
 const CLOB_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 // Install proxy for axios (used by @polymarket/clob-client internally)
+// Must patch BEFORE and AFTER CLOB client import since it uses static axios import
 let proxyInstalled = false;
 async function installAxiosProxy() {
   if (proxyInstalled || !CLOB_PROXY) return;
   proxyInstalled = true;
 
   try {
-    // Parse proxy URL: http://user:pass@host:port
-    const proxyUrl = new URL(CLOB_PROXY);
     const { HttpsProxyAgent } = await import("https-proxy-agent");
     const agent = new HttpsProxyAgent(CLOB_PROXY);
-    const axios = (await import("axios")).default;
 
-    // Set axios defaults to use the proxy agent for ALL requests
+    // Patch axios defaults - this patches the shared singleton
+    const axios = (await import("axios")).default;
     axios.defaults.httpsAgent = agent;
     axios.defaults.httpAgent = agent;
-    // Also set proxy: false to prevent axios from trying its own proxy handling
     axios.defaults.proxy = false;
 
-    console.log(`[CLOB] Axios proxy installed: ${proxyUrl.host} (user: ${proxyUrl.username})`);
+    // Also add an axios interceptor to force the agent on every request
+    axios.interceptors.request.use((config) => {
+      if (config.url?.includes("clob.polymarket.com")) {
+        config.httpsAgent = agent;
+        config.httpAgent = agent;
+        config.proxy = false;
+      }
+      return config;
+    });
+
+    // ALSO patch via require cache to get the same instance the CLOB client uses
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const axiosFromRequire = require("axios");
+      if (axiosFromRequire?.default) {
+        axiosFromRequire.default.defaults.httpsAgent = agent;
+        axiosFromRequire.default.defaults.httpAgent = agent;
+        axiosFromRequire.default.defaults.proxy = false;
+        axiosFromRequire.default.interceptors.request.use((config: { url?: string; httpsAgent?: unknown; httpAgent?: unknown; proxy?: boolean }) => {
+          if (config.url?.includes("clob.polymarket.com")) {
+            config.httpsAgent = agent;
+            config.httpAgent = agent;
+            config.proxy = false;
+          }
+          return config;
+        });
+      }
+    } catch { /* require fallback failed, ESM-only */ }
+
+    const proxyUrl = new URL(CLOB_PROXY);
+    console.log(`[CLOB] ✅ Axios proxy installed: ${proxyUrl.host} (user: ${proxyUrl.username})`);
   } catch (e) {
-    console.error("[CLOB] Axios proxy setup failed:", e instanceof Error ? e.message : e);
+    console.error("[CLOB] ❌ Axios proxy setup failed:", e instanceof Error ? e.message : e);
   }
 }
 
