@@ -69,13 +69,15 @@ interface BinanceKline {
 }
 
 export async function fetchLiveBtcPrice(): Promise<{ price: number; change24h: number; change1h: number }> {
-  // Try Binance first (best data), fall back to CoinGecko (no geo-restrictions)
+  // Try Binance first (best data), fall back to CoinGecko/Coinbase
   try {
     const [ticker24h, klines] = await Promise.all([
       cloudGet<BinanceTicker24h>("https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT", 6000),
       cloudGet<BinanceKline[]>("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=2", 6000),
     ]);
+    if (!ticker24h?.lastPrice) throw new Error("Invalid Binance response");
     const price = parseFloat(ticker24h.lastPrice);
+    if (isNaN(price) || price <= 0) throw new Error("Invalid BTC price from Binance");
     const change24h = parseFloat(ticker24h.priceChangePercent);
     let change1h = 0;
     if (klines.length >= 2) {
@@ -83,17 +85,32 @@ export async function fetchLiveBtcPrice(): Promise<{ price: number; change24h: n
       if (prevOpen > 0) change1h = Math.round((price / prevOpen - 1) * 10000) / 100;
     }
     return { price, change24h: Math.round(change24h * 100) / 100, change1h };
-  } catch {
-    // Fallback: CoinGecko (works everywhere, no geo-block)
-    const cg = await cloudGet<{ bitcoin: { usd: number; usd_24h_change: number } }>(
-      "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true",
-      8000
-    );
-    return {
-      price: cg.bitcoin.usd,
-      change24h: Math.round(cg.bitcoin.usd_24h_change * 100) / 100,
-      change1h: 0, // CoinGecko doesn't have 1h change in simple API
-    };
+  } catch (binanceErr) {
+    console.error("[BTC] Binance failed:", binanceErr instanceof Error ? binanceErr.message : binanceErr);
+    // Fallback chain: CoinGecko → Coinbase
+    try {
+      const cg = await cloudGet<{ bitcoin: { usd: number; usd_24h_change: number } }>(
+        "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true",
+        8000
+      );
+      return {
+        price: cg.bitcoin.usd,
+        change24h: Math.round(cg.bitcoin.usd_24h_change * 100) / 100,
+        change1h: 0,
+      };
+    } catch (cgErr) {
+      console.error("[BTC] CoinGecko failed:", cgErr instanceof Error ? cgErr.message : cgErr);
+      // Last resort: Coinbase (US-based, always works)
+      const cb = await cloudGet<{ data: { amount: string } }>(
+        "https://api.coinbase.com/v2/prices/BTC-USD/spot",
+        8000
+      );
+      return {
+        price: parseFloat(cb.data.amount),
+        change24h: 0,
+        change1h: 0,
+      };
+    }
   }
 }
 
