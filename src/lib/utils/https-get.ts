@@ -2,15 +2,17 @@ import https from "https";
 import dns from "dns";
 
 // Force IPv4 lookups to avoid IPv6 connectivity issues
-const lookup: dns.LookupFunction = (hostname, options, cb) => {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const lookup = (hostname: string, options: any, cb: any) => {
   if (typeof options === "function") {
-    cb = options as typeof cb;
+    cb = options;
     options = {};
   }
-  dns.lookup(hostname, { ...(options as object), family: 4 }, cb as Parameters<typeof dns.lookup>[2]);
+  dns.lookup(hostname, { ...(options as object), family: 4 }, cb);
 };
 
-const agent = new https.Agent({ lookup } as Parameters<typeof https.Agent>[0]);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const agent = new https.Agent({ lookup } as any);
 
 export function httpsGet<T>(url: string, timeoutMs = 10000): Promise<T> {
   return new Promise((resolve, reject) => {
