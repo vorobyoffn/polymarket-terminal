@@ -212,7 +212,8 @@ async function getAuthenticatedClobClient() {
   const tmpClient = new ClobClient(CLOB_API, 137, walletClient as any);
   console.log("[CLOB] Deriving API credentials...");
   const creds = await tmpClient.createOrDeriveApiKey();
-  console.log(`[CLOB] Got API key: ${creds.apiKey?.slice(0, 8)}...`);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  console.log(`[CLOB] Got API key: ${((creds as any).key || (creds as any).apiKey || "").slice(0, 8)}...`);
 
   // Signature type 2 = GNOSIS_SAFE (Polymarket proxy wallets)
   // Pass the funder address (proxy wallet) as the 6th argument

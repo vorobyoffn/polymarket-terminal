@@ -41,7 +41,7 @@ export async function GET() {
     const creds = await tmpClient.createOrDeriveApiKey();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const c = creds as any;
-    results.apiKey = (c.apiKey || c.key || "")?.slice(0, 12) + "...";
+    results.apiKey = (c.key || c.apiKey || "")?.slice(0, 12) + "...";
     results.hasPassphrase = !!(c.passphrase);
     results.hasSecret = !!(c.secret);
 
