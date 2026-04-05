@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { useState, useEffect, useCallback } from "react";
 import {
   LayoutDashboard, TrendingUp, Wallet, Copy, Bot, BarChart3,
-  Settings, Activity, CloudRain, Bitcoin, RefreshCw,
+  Settings, Activity, CloudRain, Bitcoin, RefreshCw, Layers,
 } from "lucide-react";
 import { useStore } from "@/lib/store";
 
@@ -16,6 +16,7 @@ const navItems = [
   { href: "/copy-trade", label: "Copy Trading",    icon: Copy },
   { href: "/weather",    label: "Weather Arb",     icon: CloudRain },
   { href: "/btc",        label: "BTC Arb",         icon: Bitcoin },
+  { href: "/strategies", label: "Strategies",      icon: Layers },
   { href: "/bots",       label: "Custom Bots",     icon: Bot },
   { href: "/positions",  label: "Positions",       icon: BarChart3 },
   { href: "/settings",   label: "Settings",        icon: Settings },
