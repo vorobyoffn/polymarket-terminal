@@ -649,32 +649,35 @@ async function scanAndTrade() {
 
     await delay(3000); // 3s pause between strategies
 
-    // ── Strategy 2: BTC Arb ──────────────────────────────────────────────
+    // ── Strategy 2: BTC Arb (disabled unless ENABLE_BTC_ARB=true) ─────────
     let btcSignals: BtcSignal[] = [];
-    try {
-      const btcResult = await runBtcArbScan(state.bankroll);
-      state.lastScan = btcResult;
-      btcSignals = btcResult.signals
-        .filter((s) => s.lor >= state.minLor && s.edge >= state.minEdge)
-        .filter((s) => !tradedMarkets.has(s.marketId));
-    } catch (e) {
-      console.error("[AutoTrader] BTC scan error:", e instanceof Error ? e.message : e);
+    if (process.env.ENABLE_BTC_ARB === "true") {
+      try {
+        const btcResult = await runBtcArbScan(state.bankroll);
+        state.lastScan = btcResult;
+        btcSignals = btcResult.signals
+          .filter((s) => s.lor >= state.minLor && s.edge >= state.minEdge)
+          .filter((s) => !tradedMarkets.has(s.marketId));
+      } catch (e) {
+        console.error("[AutoTrader] BTC scan error:", e instanceof Error ? e.message : e);
+      }
+      await delay(3000);
     }
 
-    await delay(3000);
-
-    // ── Strategy 3: Correlation Arb ──────────────────────────────────────
+    // ── Strategy 3: Correlation Arb (disabled unless ENABLE_CORRELATION_ARB=true) ─
     let corrSignals: BtcSignal[] = [];
-    try {
-      const corrResult = await runCorrelationArbScan();
-      for (const sig of corrResult.signals.slice(0, 10)) {
-        const trades = correlationSignalToTradeables(sig, state.bankroll)
-          .filter((s) => !tradedMarkets.has(s.marketId));
-        corrSignals.push(...trades);
+    if (process.env.ENABLE_CORRELATION_ARB === "true") {
+      try {
+        const corrResult = await runCorrelationArbScan();
+        for (const sig of corrResult.signals.slice(0, 10)) {
+          const trades = correlationSignalToTradeables(sig, state.bankroll)
+            .filter((s) => !tradedMarkets.has(s.marketId));
+          corrSignals.push(...trades);
+        }
+        console.log(`[AutoTrader] Corr scan: ${corrResult.signals.length} events, ${corrSignals.length} trade signals`);
+      } catch (e) {
+        console.error("[AutoTrader] Correlation scan error:", e instanceof Error ? e.message : e);
       }
-      console.log(`[AutoTrader] Corr scan: ${corrResult.signals.length} events, ${corrSignals.length} trade signals`);
-    } catch (e) {
-      console.error("[AutoTrader] Correlation scan error:", e instanceof Error ? e.message : e);
     }
 
     // ── Merge & Execute ──────────────────────────────────────────────────
