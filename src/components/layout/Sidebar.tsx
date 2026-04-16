@@ -19,6 +19,7 @@ const navItems = [
   { href: "/strategies", label: "Strategies",      icon: Layers },
   { href: "/bots",       label: "Custom Bots",     icon: Bot },
   { href: "/positions",  label: "Positions",       icon: BarChart3 },
+  { href: "/performance", label: "Performance",    icon: TrendingUp },
   { href: "/settings",   label: "Settings",        icon: Settings },
 ];
 
@@ -30,18 +31,34 @@ interface WalletBalance {
   timestamp: string;
 }
 
+interface PortfolioSummary {
+  walletUsdc: number;
+  totalPortfolio: number;
+  pnl: number;
+  pnlPct: number;
+  current: number;
+}
+
 export default function Sidebar() {
   const pathname = usePathname();
   const { tradingMode, balance } = useStore();
   const [walletBal, setWalletBal] = useState<WalletBalance | null>(null);
+  const [portfolio, setPortfolio] = useState<PortfolioSummary | null>(null);
   const [loading, setLoading] = useState(false);
 
   const fetchBalance = useCallback(async () => {
     if (tradingMode !== "live") return;
     setLoading(true);
     try {
-      const res = await fetch("/api/wallet-balance");
-      if (res.ok) setWalletBal(await res.json() as WalletBalance);
+      const [walletRes, perfRes] = await Promise.all([
+        fetch("/api/wallet-balance"),
+        fetch("/api/performance"),
+      ]);
+      if (walletRes.ok) setWalletBal(await walletRes.json() as WalletBalance);
+      if (perfRes.ok) {
+        const perf = await perfRes.json() as { totals: PortfolioSummary };
+        if (perf.totals) setPortfolio(perf.totals);
+      }
     } catch { /* silent */ }
     setLoading(false);
   }, [tradingMode]);
@@ -61,40 +78,38 @@ export default function Sidebar() {
       {/* Logo */}
       <div className="p-4 border-b border-border">
         <div className="flex items-center gap-2">
-          <Activity className="w-5 h-5 text-accent-cyan" />
-          <span className="text-accent-cyan font-bold text-sm tracking-wider">POLYMARKET</span>
+          <Activity className="w-5 h-5" style={{ color: "#e8751a" }} />
+          <span className="font-bold text-sm tracking-wider" style={{ color: "#e8751a" }}>ARRAKIS</span>
         </div>
-        <div className="text-text-muted text-[10px] mt-1 tracking-widest uppercase">Terminal v1.0</div>
+        <div className="text-text-muted text-[10px] mt-1 tracking-widest uppercase">Trading Terminal</div>
       </div>
 
-      {/* Mode indicator */}
+      {/* Portfolio summary */}
       <div className="px-4 py-3 border-b border-border">
         <div className={`flex items-center gap-2 text-xs font-semibold ${
           tradingMode === "paper" ? "text-accent-yellow" : "text-accent-green glow-green"
         }`}>
           <span className={`w-2 h-2 rounded-full ${tradingMode === "paper" ? "bg-accent-yellow" : "bg-accent-green"}`} />
           {tradingMode === "paper" ? "PAPER MODE" : "LIVE MODE"}
-          {tradingMode === "live" && loading && <RefreshCw className="w-2.5 h-2.5 animate-spin ml-auto opacity-40" />}
+          {loading && <RefreshCw className="w-2.5 h-2.5 animate-spin ml-auto opacity-40" />}
         </div>
-        <div className="text-text-secondary text-xs mt-1 font-mono">
-          ${displayBalance.toLocaleString("en-US", { minimumFractionDigits: 2 })}
-          {tradingMode === "live" && <span className="text-text-muted text-[9px] ml-1">USDC</span>}
+        <div className="text-text-primary text-lg font-mono font-bold mt-1" style={{ fontVariantNumeric: "tabular-nums" }}>
+          ${portfolio ? portfolio.totalPortfolio.toLocaleString("en-US", { minimumFractionDigits: 2 }) : displayBalance.toLocaleString("en-US", { minimumFractionDigits: 2 })}
         </div>
+        {portfolio && (
+          <div className={`text-[10px] font-mono mt-0.5 ${portfolio.pnl >= 0 ? "text-accent-green" : "text-accent-red"}`} style={{ fontVariantNumeric: "tabular-nums" }}>
+            {portfolio.pnl >= 0 ? "+" : ""}${portfolio.pnl.toFixed(2)} ({portfolio.pnlPct >= 0 ? "+" : ""}{portfolio.pnlPct.toFixed(1)}%) unrealized
+          </div>
+        )}
         {tradingMode === "live" && walletBal && (
-          <div className="text-text-muted text-[9px] font-mono mt-0.5 space-y-0.5">
-            {walletBal.exchange > 0 && (
-              <div className="flex justify-between">
-                <span>Exchange:</span>
-                <span className="text-accent-green">${walletBal.exchange.toFixed(2)}</span>
-              </div>
-            )}
+          <div className="text-text-muted text-[9px] font-mono mt-1.5 space-y-0.5">
             <div className="flex justify-between">
-              <span>Wallet:</span>
-              <span>${(walletBal.eoa.usdc + walletBal.proxy.usdc).toFixed(2)}</span>
+              <span>Cash:</span>
+              <span>${walletBal.totalUsdc.toFixed(2)}</span>
             </div>
-            <div className="flex justify-between opacity-60">
-              <span>POL (gas):</span>
-              <span>{(walletBal.eoa.matic + walletBal.proxy.matic).toFixed(4)}</span>
+            <div className="flex justify-between">
+              <span>Positions:</span>
+              <span>${portfolio ? portfolio.current.toFixed(2) : "—"}</span>
             </div>
           </div>
         )}

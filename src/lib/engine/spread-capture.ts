@@ -4,13 +4,32 @@
 const CLOB_API = process.env.CLOB_API_URL || "https://clob.polymarket.com";
 const GAMMA_API = process.env.GAMMA_API_URL || "https://gamma-api.polymarket.com";
 
-async function cloudGet<T>(url: string, timeoutMs = 10000): Promise<T> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const res = await fetch(url, { signal: controller.signal });
-  clearTimeout(timer);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return (await res.json()) as T;
+async function cloudGet<T>(url: string, timeoutMs = 30000): Promise<T> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const https = await import("node:https");
+      const dns = await import("node:dns");
+      dns.setDefaultResultOrder("ipv4first");
+
+      return await new Promise<T>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("timeout")), timeoutMs);
+        const req = https.get(url, { family: 4 }, (res) => {
+          let data = "";
+          res.on("data", (c: Buffer) => { data += c.toString(); });
+          res.on("end", () => {
+            clearTimeout(timer);
+            if (res.statusCode && res.statusCode >= 400) return reject(new Error(`HTTP ${res.statusCode}`));
+            try { resolve(JSON.parse(data) as T); } catch { reject(new Error("JSON parse failed")); }
+          });
+        });
+        req.on("error", (e: Error) => { clearTimeout(timer); reject(e); });
+      });
+    } catch (e) {
+      if (attempt === 2) throw e;
+      await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
+    }
+  }
+  throw new Error("cloudGet failed");
 }
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -87,10 +106,11 @@ export async function runSpreadCaptureScan(): Promise<SpreadCaptureResult> {
     }
   }
 
-  // Sort by volume descending and check top 30 orderbooks
+  // Sort by volume descending, skip top 20 (already tight spreads), check next 80
   topMarkets.sort((a, b) => b.volume - a.volume);
+  const candidates = topMarkets.slice(10, 90);
 
-  for (const market of topMarkets.slice(0, 30)) {
+  for (const market of candidates) {
     marketsChecked++;
     const book = await getOrderbook(market.tokenIds[0]);
     if (!book || !book.bids.length || !book.asks.length) continue;
@@ -103,7 +123,9 @@ export async function runSpreadCaptureScan(): Promise<SpreadCaptureResult> {
     const midPrice = (bestBid + bestAsk) / 2;
     const spreadPct = spread / midPrice;
 
-    if (spread >= 0.03) { // 3 cents minimum spread
+    // Filter: spread must be 3-30¢, both bid and ask must be in tradeable range (5¢-95¢)
+    // Skip extreme markets where bid=0.1¢ ask=99.9¢ — those aren't real spreads
+    if (spread >= 0.03 && spread <= 0.30 && bestBid >= 0.05 && bestAsk <= 0.95) {
       wideCount++;
       const myBid = Math.round((midPrice - spread * 0.25) * 100) / 100;
       const myAsk = Math.round((midPrice + spread * 0.25) * 100) / 100;

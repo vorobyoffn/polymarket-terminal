@@ -1,4 +1,9 @@
 .next
 node_modules
 .env.local
+.env
 *.tsbuildinfo
+bot.log
+bot-error.log
+data/
+.claude/

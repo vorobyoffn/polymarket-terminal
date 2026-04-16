@@ -5,6 +5,8 @@
 import { runBtcArbScan, type BtcSignal, type BtcArbResult } from "./btc-arb";
 import { runExpiryConvergenceScan, type ExpirySignal } from "./expiry-convergence";
 import { runCorrelationArbScan, type CorrelationSignal } from "./correlation-arb";
+import { runWeatherArbScan, type WeatherSignal } from "@/lib/weather/oracle";
+import { recordPriceSnapshot } from "@/lib/weather/price-recorder";
 
 // Cloud-friendly fetch
 async function cloudGet<T>(url: string, timeoutMs = 10000): Promise<T> {
@@ -260,38 +262,77 @@ async function getAuthenticatedClobClient() {
   await installAxiosProxy();
 
   const { ClobClient } = await import("@polymarket/clob-client");
-  const { createWalletClient, http } = await import("viem");
-  const { privateKeyToAccount } = await import("viem/accounts");
-  const { polygon } = await import("viem/chains");
+  // Use ethers v5 Wallet — proven to work with CLOB SDK signing
+  const { Wallet } = await import("ethers");
 
   const normalizedKey = privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`;
-  const account = privateKeyToAccount(normalizedKey as `0x${string}`);
-  console.log(`[CLOB] EOA address: ${account.address}`);
-  console.log(`[CLOB] Proxy/funder: ${POLYMARKET_PROXY}`);
+  const wallet = new Wallet(normalizedKey);
+  console.log(`[CLOB] EOA address: ${wallet.address}`);
 
-  const walletClient = createWalletClient({
-    account,
-    chain: polygon,
-    transport: http(POLYGON_RPC),
-  });
+  // Derive or use cached API credentials
+  // The CLOB SDK's createOrDeriveApiKey can return incomplete objects in webpack
+  // so we derive once and cache, or use env var overrides
+  let creds: { key: string; secret: string; passphrase: string };
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const tmpClient = new ClobClient(CLOB_API, 137, walletClient as any);
-  console.log("[CLOB] Deriving API credentials...");
-  const creds = await tmpClient.createOrDeriveApiKey();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  console.log(`[CLOB] Got API key: ${((creds as any).key || (creds as any).apiKey || "").slice(0, 8)}...`);
+  const envKey = process.env.CLOB_API_KEY;
+  const envSecret = process.env.CLOB_API_SECRET;
+  const envPassphrase = process.env.CLOB_API_PASSPHRASE;
 
-  // Signature type 2 = GNOSIS_SAFE (Polymarket proxy wallets)
-  // Pass the funder address (proxy wallet) as the 6th argument
+  if (envKey && envSecret && envPassphrase) {
+    creds = { key: envKey, secret: envSecret, passphrase: envPassphrase };
+    console.log(`[CLOB] Using env credentials: ${creds.key.slice(0, 8)}...`);
+  } else {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const tmpClient = new ClobClient(CLOB_API, 137, wallet as any);
+    console.log("[CLOB] Deriving API credentials...");
+    const rawCreds = await tmpClient.createOrDeriveApiKey();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rc = rawCreds as any;
+    creds = {
+      key: rc.key || rc.apiKey || "",
+      secret: rc.secret || "",
+      passphrase: rc.passphrase || "",
+    };
+    console.log(`[CLOB] Got key: ${creds.key.slice(0, 8)}... secret=${!!creds.secret} passphrase=${!!creds.passphrase}`);
+
+    if (!creds.secret || !creds.passphrase) {
+      console.error("[CLOB] ❌ Credentials incomplete! Set CLOB_API_KEY, CLOB_API_SECRET, CLOB_API_PASSPHRASE in .env.local");
+      throw new Error("CLOB credentials incomplete — secret or passphrase missing");
+    }
+  }
+
+  // Sig type 0 = EOA — funds are in the MetaMask wallet directly
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const authedClient = new ClobClient(
-    CLOB_API, 137, walletClient as any, creds, 2, POLYMARKET_PROXY
-  );
+  const authedClient = new ClobClient(CLOB_API, 137, wallet as any, creds as any, 0);
+
+  // Monkey-patch _resolveTickSize to skip network call when tickSize is provided
+  // The SDK always fetches getTickSize even when tickSize is passed, causing AggregateError
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (authedClient as any)._resolveTickSize = async function(tokenID: string, tickSize?: string) {
+    if (tickSize) return tickSize;
+    // Fallback: try network call, default to 0.01 on failure
+    try {
+      return await this.getTickSize(tokenID);
+    } catch {
+      return "0.01";
+    }
+  };
+
+  // Also patch _resolveFeeRateBps to not fail on network errors
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const origResolveFee = (authedClient as any)._resolveFeeRateBps?.bind(authedClient);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (authedClient as any)._resolveFeeRateBps = async function(tokenID: string, feeRateBps?: number) {
+    try {
+      return origResolveFee ? await origResolveFee(tokenID, feeRateBps) : feeRateBps || 0;
+    } catch {
+      return feeRateBps || 0;
+    }
+  };
 
   cachedClobClient = authedClient;
   cachedClobClientTimestamp = now;
-  console.log("[CLOB] Authenticated client ready");
+  console.log("[CLOB] ✅ Authenticated client ready (ethers v5, sig type 0, patched)");
   return authedClient;
 }
 
@@ -302,31 +343,112 @@ async function executeLiveTrade(signal: BtcSignal): Promise<TradeRecord | null> 
     return null;
   }
 
-  const bestAsk = await getOrderbookBestPrice(tokenInfo.tokenId, "buy");
-  if (!bestAsk) {
-    console.error(`[AutoTrader] No orderbook for token ${tokenInfo.tokenId}`);
+  // ── STEP 1: PRICE ANALYSIS ──
+  // Use the signal's market price as reference (from Gamma API — reliable)
+  // Orderbook can be misleading for negRisk/weather markets
+  const marketYesPrice = signal.marketPrice || 0;
+  const entryEstimate = signal.direction === "BUY_YES" ? marketYesPrice : 1 - marketYesPrice;
+
+  // Try orderbook for spread check, but don't require it
+  let bestAsk: number | null = null;
+  let bestBid: number | null = null;
+  let spreadOk = true;
+  try {
+    bestAsk = await getOrderbookBestPrice(tokenInfo.tokenId, "buy");
+    bestBid = await getOrderbookBestPrice(tokenInfo.tokenId, "sell");
+    if (bestAsk && bestBid) {
+      const mid = (bestBid + bestAsk) / 2;
+      const spread = bestAsk - bestBid;
+      const spreadPct = mid > 0 ? spread / mid : 1;
+      // Only block on spread if it's a non-negRisk market (weather markets have weird orderbooks)
+      if (!tokenInfo.negRisk && spreadPct > 0.12) {
+        console.log(`[SKIP] ${signal.marketId} spread too wide: ${(spreadPct * 100).toFixed(1)}%`);
+        spreadOk = false;
+      }
+    }
+  } catch { /* orderbook fetch failed — proceed with signal price */ }
+  if (!spreadOk) return null;
+
+  // ── STEP 2: PAYOFF RATIO CHECK ──
+  const potentialProfit = 1 - entryEstimate;
+  const potentialLoss = entryEstimate;
+  const payoffRatio = potentialLoss > 0 ? potentialProfit / potentialLoss : 0;
+
+  if (payoffRatio < 0.5) {
+    console.log(`[SKIP] ${signal.marketId} payoff ratio too low: ${payoffRatio.toFixed(2)}x (entry ~${(entryEstimate * 100).toFixed(0)}¢)`);
     return null;
   }
 
-  const betSize = Math.min(signal.recommendedBet, state.bankroll * 0.2);
+  // ── STEP 3: PRICE ZONE CHECK ──
+  if (entryEstimate > 0.65) {
+    console.log(`[SKIP] ${signal.marketId} entry too high: ${(entryEstimate * 100).toFixed(1)}¢`);
+    return null;
+  }
+  if (entryEstimate < 0.03) {
+    console.log(`[SKIP] ${signal.marketId} entry too low: ${(entryEstimate * 100).toFixed(1)}¢`);
+    return null;
+  }
+
+  const betSize = Math.min(signal.recommendedBet, state.bankroll * 0.08);
   if (betSize < 5) return null;
 
   const privateKey = process.env.PRIVATE_KEY;
   if (!privateKey) {
-    console.error("[AutoTrader] PRIVATE_KEY not set — cannot place live trades");
+    console.error("[AutoTrader] PRIVATE_KEY not set");
     return null;
   }
 
   try {
     const authedClient = await getAuthenticatedClobClient();
 
-    // Use GTC (Good-Til-Cancelled) limit order for better fill rates
-    // FOK cancels immediately if not filled — GTC rests on the book
-    const limitPrice = Math.min(bestAsk, 0.99);
-    const roundedPrice = Math.round(limitPrice / parseFloat(tokenInfo.tickSize)) * parseFloat(tokenInfo.tickSize);
-    const finalPrice = Math.round(roundedPrice * 100) / 100;
+    // ── STEP 5: SMART LIMIT PRICING (Weather-optimized) ──
+    const theoreticalPrice = signal.theoreticalProb || 0;
+    const tick = parseFloat(tokenInfo.tickSize);
+    let limitPrice: number;
 
-    console.log(`[CLOB] Placing GTC order: BUY ${tokenInfo.tokenId.slice(0, 12)}... @ ${finalPrice} size=$${betSize.toFixed(2)} tick=${tokenInfo.tickSize} negRisk=${tokenInfo.negRisk}`);
+    // Weather markets have thin orderbooks — the ask is often 90-99¢
+    // which is meaningless. Use model price instead of orderbook.
+    const isWeather = signal.marketQuestion?.toLowerCase().includes("temperature") ||
+                      signal.marketQuestion?.toLowerCase().includes("highest");
+
+    if (signal.direction === "BUY_YES") {
+      if (theoreticalPrice > marketYesPrice && theoreticalPrice > 0) {
+        // Place at 25-30% between market and model for weather (tighter = better entry)
+        // Place at 40% for other markets
+        const aggression = isWeather ? 0.25 : 0.40;
+        limitPrice = marketYesPrice + (theoreticalPrice - marketYesPrice) * aggression;
+      } else {
+        // No model edge — bid 15-20% below market
+        limitPrice = marketYesPrice * (isWeather ? 0.80 : 0.85);
+      }
+      // Only use orderbook ask if it's a real price (not 90¢+ nonsense on weather)
+      if (bestAsk && (!isWeather || bestAsk < limitPrice * 1.5)) {
+        limitPrice = Math.min(limitPrice, bestAsk);
+      }
+    } else {
+      // BUY NO
+      const noMarketPrice = 1 - marketYesPrice;
+      const noModelPrice = theoreticalPrice > 0 ? 1 - theoreticalPrice : 0;
+      if (noModelPrice > noMarketPrice && noModelPrice > 0) {
+        const aggression = isWeather ? 0.25 : 0.40;
+        limitPrice = noMarketPrice + (noModelPrice - noMarketPrice) * aggression;
+      } else {
+        limitPrice = noMarketPrice * (isWeather ? 0.80 : 0.85);
+      }
+      if (bestAsk && (!isWeather || bestAsk < limitPrice * 1.5)) {
+        limitPrice = Math.min(limitPrice, bestAsk);
+      }
+    }
+
+    // Hard ceiling: 55¢ for weather (tighter), 60¢ for others
+    const priceCeiling = isWeather ? 0.55 : 0.60;
+    limitPrice = Math.min(limitPrice, priceCeiling);
+    limitPrice = Math.max(limitPrice, 0.03);
+
+    const roundedPrice = Math.round(limitPrice / tick) * tick;
+    const finalPrice = Math.max(tick, Math.min(priceCeiling, Math.round(roundedPrice * 1000) / 1000));
+
+    console.log(`[CLOB] Placing GTC order: BUY ${tokenInfo.tokenId.slice(0, 12)}... @ ${finalPrice} (mktYes=${(marketYesPrice*100).toFixed(1)}c model=${(theoreticalPrice*100).toFixed(1)}c) size=$${betSize.toFixed(2)} tick=${tokenInfo.tickSize} negRisk=${tokenInfo.negRisk}`);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const order = await (authedClient as any).createAndPostOrder(
@@ -337,7 +459,7 @@ async function executeLiveTrade(signal: BtcSignal): Promise<TradeRecord | null> 
         size: betSize,
       },
       { tickSize: tokenInfo.tickSize, negRisk: tokenInfo.negRisk },
-      "GTC" // Good-Til-Cancelled instead of FOK
+      "GTC"
     );
 
     console.log(`[CLOB] Order response:`, JSON.stringify(order).slice(0, 300));
@@ -345,7 +467,7 @@ async function executeLiveTrade(signal: BtcSignal): Promise<TradeRecord | null> 
     const orderStatus = order?.status || order?.orderStatus || "unknown";
     const orderId = order?.orderID || order?.id || order?.order_id || "";
 
-    const shares = betSize / bestAsk;
+    const shares = betSize / finalPrice;
     const trade: TradeRecord = {
       id: genId(),
       timestamp: new Date().toISOString(),
@@ -457,7 +579,59 @@ async function scanAndTrade() {
     if (slotsAvailable <= 0) return;
     const tradedMarkets = new Set(openTrades.map((t) => t.marketId));
 
-    // ── Strategy 1: BTC Arb ──────────────────────────────────────────────
+    // Record price snapshot for historical data
+    try { await recordPriceSnapshot(); } catch (e) {
+      console.error("[AutoTrader] Price recording failed:", e instanceof Error ? e.message : e);
+    }
+
+    // Auto-resolve any trades whose markets have settled
+    try { await autoResolveTrades(); } catch { /* silent */ }
+
+    // Auto-redeem: claim winnings when Polymarket marks positions as redeemable
+    try { await autoRedeemPositions(); } catch (e) {
+      console.error("[AutoTrader] Auto-redeem error:", e instanceof Error ? e.message : e);
+    }
+
+    // Run strategies SEQUENTIALLY to avoid DNS overload
+    const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+    // ── Strategy 1: Weather Arbitrage (highest priority — daily resolution) ──
+    let weatherSignals: BtcSignal[] = [];
+    try {
+      const weatherResult = await runWeatherArbScan();
+      weatherSignals = weatherResult.signals
+        .filter((s: WeatherSignal) => s.edge >= 0.10 && s.confidence >= 0.70)
+        .filter((s: WeatherSignal) => !tradedMarkets.has(s.marketId))
+        .map((s: WeatherSignal): BtcSignal => ({
+          marketId: s.marketId,
+          marketQuestion: s.marketQuestion,
+          marketPrice: s.marketPrice,
+          theoreticalProb: s.forecastProb,
+          edge: s.edge,
+          lagPct: 0,
+          direction: s.direction,
+          ev: s.direction === "BUY_YES"
+            ? s.forecastProb / s.marketPrice - 1
+            : (1 - s.forecastProb) / (1 - s.marketPrice) - 1,
+          lor: Math.abs(Math.log(Math.max(0.001, s.forecastProb) / (1 - Math.max(0.001, s.forecastProb))) - Math.log(Math.max(0.001, s.marketPrice) / (1 - Math.max(0.001, s.marketPrice)))),
+          significance: s.edge >= 0.30 ? 4 : s.edge >= 0.20 ? 3 : s.edge >= 0.10 ? 2 : 1,
+          kellyFraction: Math.min(s.edge * s.confidence * 0.5, 0.15),
+          recommendedBet: Math.min(state.bankroll * s.edge * s.confidence * 0.5, state.bankroll * 0.10),
+          strikePrice: s.targetTemp,
+          strikeType: s.targetType === "above" ? "above" : s.targetType === "below" ? "below" : "range",
+          daysToExpiry: s.daysToExpiry,
+          expiryDate: s.date,
+          liveBtcPrice: 0,
+          distancePct: 0,
+        }));
+      console.log(`[AutoTrader] Weather scan: ${weatherResult.signals.length} signals, ${weatherSignals.length} qualifying`);
+    } catch (e) {
+      console.error("[AutoTrader] Weather scan error:", e instanceof Error ? e.message : e);
+    }
+
+    await delay(3000); // 3s pause between strategies
+
+    // ── Strategy 2: BTC Arb ──────────────────────────────────────────────
     let btcSignals: BtcSignal[] = [];
     try {
       const btcResult = await runBtcArbScan(state.bankroll);
@@ -469,22 +643,7 @@ async function scanAndTrade() {
       console.error("[AutoTrader] BTC scan error:", e instanceof Error ? e.message : e);
     }
 
-    // ── Strategy 2: Expiry Convergence ───────────────────────────────────
-    let expirySignals: BtcSignal[] = [];
-    try {
-      const expiryResult = await runExpiryConvergenceScan(state.bankroll);
-      expirySignals = expiryResult.signals
-        .filter((s) => s.edge >= 0.05 && s.confidence >= 0.70)
-        .filter((s) => !tradedMarkets.has(s.marketId))
-        .map((s) => {
-          const t = expirySignalToTradeable(s);
-          t.recommendedBet = Math.min(state.bankroll * t.kellyFraction, state.bankroll * 0.10);
-          return t;
-        });
-      console.log(`[AutoTrader] Expiry scan: ${expiryResult.signals.length} signals, ${expirySignals.length} qualifying`);
-    } catch (e) {
-      console.error("[AutoTrader] Expiry scan error:", e instanceof Error ? e.message : e);
-    }
+    await delay(3000);
 
     // ── Strategy 3: Correlation Arb ──────────────────────────────────────
     let corrSignals: BtcSignal[] = [];
@@ -501,30 +660,130 @@ async function scanAndTrade() {
     }
 
     // ── Merge & Execute ──────────────────────────────────────────────────
-    // Priority: Expiry (highest edge, shortest time) > Corr Arb > BTC Arb
     const allSignals = [
-      ...expirySignals.map(s => ({ ...s, _strategy: "expiry" })),
-      ...corrSignals.map(s => ({ ...s, _strategy: "correlation" })),
+      ...weatherSignals.map(s => ({ ...s, _strategy: "weather" })),
       ...btcSignals.map(s => ({ ...s, _strategy: "btc" })),
+      ...corrSignals.map(s => ({ ...s, _strategy: "correlation" })),
     ];
 
-    // Sort by edge descending
-    allSignals.sort((a, b) => b.edge - a.edge);
+    // ══════════════════════════════════════════════════════════════════
+    // MULTI-LAYER SIGNAL FILTER — each layer eliminates bad trades
+    // ══════════════════════════════════════════════════════════════════
 
+    let preFilter = allSignals.length;
+
+    // ── Layer 1: TIME FILTER ──
+    // Only trade markets that resolve soon. Long-dated = dead capital.
+    const layer1 = allSignals.filter(s => {
+      if (s.daysToExpiry > 14) return false;  // 14 days max (was 30)
+      if (s.daysToExpiry < 0) return false;    // already expired
+      return true;
+    });
+
+    // ── Layer 2: EDGE QUALITY ──
+    // Edge must be real, not noise. Higher bar for longer-dated.
+    const layer2 = layer1.filter(s => {
+      const minEdge = s.daysToExpiry <= 1 ? 0.08 : s.daysToExpiry <= 3 ? 0.10 : 0.15;
+      if (s.edge < minEdge) return false;
+      // Edge should also be significant relative to the price
+      // 10% edge on a 5¢ market = noise. 10% edge on a 40¢ market = real.
+      if (s.marketPrice > 0 && s.edge / s.marketPrice < 0.15) return false;
+      return true;
+    });
+
+    // ── Layer 3: PRICE ZONE ──
+    // Only trade in the sweet spot: 8¢-60¢ for YES, 40¢-92¢ for NO
+    // This ensures minimum 1.5:1 payoff ratio
+    const layer3 = layer2.filter(s => {
+      if (s.direction === "BUY_YES") {
+        // We pay marketPrice for YES. Sweet spot: 8¢-60¢
+        if (s.marketPrice < 0.08 || s.marketPrice > 0.60) return false;
+      } else {
+        // We buy NO token. NO price = 1 - yesPrice. Sweet spot: YES at 40¢-92¢
+        if (s.marketPrice < 0.40 || s.marketPrice > 0.92) return false;
+      }
+      return true;
+    });
+
+    // ── Layer 4: CONFIDENCE ──
+    // Signal must have meaningful statistical significance
+    const layer4 = layer3.filter(s => {
+      if (s.significance < 2) return false;  // at least 2 stars
+      if (s.lor < 0.3) return false;         // LOR too weak
+      return true;
+    });
+
+    // ── Layer 5: STRATEGY-SPECIFIC RULES ──
+    const filtered = layer4.filter(s => {
+      const strat = (s as unknown as { _strategy: string })._strategy;
+
+      if (strat === "weather") {
+        // Weather: must have high confidence forecast
+        if (s.theoreticalProb < 0.05 || s.theoreticalProb > 0.95) return false;
+        return true;
+      }
+      if (strat === "btc") {
+        // BTC: only during volatile periods (high LOR)
+        if (s.lor < 1.0) return false;
+        return true;
+      }
+      if (strat === "correlation") {
+        // Correlation: must be strong deviation (>8%) and not on near-certainty markets
+        if (s.edge < 0.08) return false;
+        return true;
+      }
+      return true;
+    });
+
+    console.log(`[AutoTrader] Filter: ${preFilter} raw → ${layer1.length} time → ${layer2.length} edge → ${layer3.length} price → ${layer4.length} confidence → ${filtered.length} final`);
+
+    // ── RANKING: Score each signal by expected value per day ──
+    // Score = (edge × confidence × payoff_ratio) / days_to_expiry
+    const scored = filtered.map(s => {
+      const entryPrice = s.direction === "BUY_YES" ? s.marketPrice : 1 - s.marketPrice;
+      const payoffRatio = (1 - entryPrice) / entryPrice;
+      const confidence = s.significance / 4;  // normalize to 0-1
+      const daysToResolve = Math.max(s.daysToExpiry, 0.5); // min half day
+      const score = (s.edge * confidence * payoffRatio) / daysToResolve;
+      return { ...s, _score: score, _payoffRatio: payoffRatio };
+    });
+
+    scored.sort((a, b) => b._score - a._score);
+
+    // ── POSITION LIMITS ──
     let executed = 0;
-    for (const signal of allSignals) {
+    const openTrades2 = state.trades.filter(t => t.status === "open" || t.status === "pending");
+    const totalAllocated = openTrades2.reduce((s, t) => s + t.size, 0);
+    const dailySpent = state.trades
+      .filter(t => new Date(t.timestamp).toDateString() === new Date().toDateString())
+      .reduce((s, t) => s + t.size, 0);
+
+    for (const signal of scored) {
       if (executed >= slotsAvailable) break;
       if (tradedMarkets.has(signal.marketId)) continue;
 
-      // Risk check: max 40% of bankroll in any single strategy
-      const stratTrades = state.trades.filter(t => t.status === "open");
-      const stratAlloc = stratTrades.reduce((s, t) => s + t.size, 0);
-      if (stratAlloc >= state.bankroll * 0.40) continue;
-
-      // Compute bet size if not set
-      if (!signal.recommendedBet || signal.recommendedBet <= 0) {
-        signal.recommendedBet = Math.min(state.bankroll * signal.kellyFraction, state.bankroll * 0.10);
+      // Max 35% of bankroll allocated at any time
+      if (totalAllocated + (signal.recommendedBet || 0) > state.bankroll * 0.35) {
+        console.log(`[AutoTrader] Portfolio limit reached: $${totalAllocated.toFixed(0)} allocated`);
+        break;
       }
+
+      // Daily spend cap: 40% of bankroll
+      if (dailySpent > state.bankroll * 0.40) {
+        console.log(`[AutoTrader] Daily limit reached: $${dailySpent.toFixed(0)} spent today`);
+        break;
+      }
+
+      // Max 3 trades per strategy per cycle
+      const strat = (signal as unknown as { _strategy: string })._strategy;
+      const stratCount = state.trades.filter(t =>
+        t.status === "open" && (t as unknown as { _strategy: string })._strategy === strat
+      ).length;
+      if (stratCount >= 3) continue;
+
+      // Size: based on edge strength and payoff ratio
+      const baseSize = Math.min(state.bankroll * signal.kellyFraction, state.bankroll * 0.10);
+      signal.recommendedBet = Math.max(5, Math.min(baseSize, state.bankroll * 0.08));
 
       const trade = state.mode === "paper"
         ? await executePaperTrade(signal)
@@ -618,20 +877,255 @@ autoStartIfConfigured();
 
 export function closePaperTrade(tradeId: string, outcome: "won" | "lost") {
   const trade = state.trades.find((t) => t.id === tradeId);
-  if (!trade || trade.mode !== "paper") return;
+  if (!trade) return;
 
   trade.status = outcome;
   if (outcome === "won") {
-    // Won: get back shares * $1 (binary payout)
     const payout = trade.shares * 1;
     trade.exitPrice = 1;
     trade.pnl = Math.round((payout - trade.size) * 100) / 100;
-    state.paperBalance += payout;
+    if (trade.mode === "paper") state.paperBalance += payout;
   } else {
-    // Lost: shares worth $0
     trade.exitPrice = 0;
     trade.pnl = -trade.size;
   }
 
   updateStats();
+}
+
+// ── Auto-redeem: claim winnings when Polymarket says redeemable ──────────────
+
+// Track what we've already claimed so we don't retry
+const claimedConditionIds = new Set([
+  "0xb907f677d1a4574261607573593f9931f0bdcb48dd014d6e4fbc25aa4051904a", // Taipei
+  "0xb8433678ecb971f94728c0579c9dd349521567678436daad1471c8f4cb5e033e", // Moscow 9C
+  "0xc044c6e20f16903b5d307c786f7900917fdad7db76db0bbf7af15d28ed07c585", // Singapore
+  "0x3b856eb1f92b453485bdbe3b9063d067bae3337d60165df145caa2daab7fc81a", // Moscow 11C
+]);
+
+async function autoRedeemPositions() {
+  // Only check every 5th scan to avoid hammering the API
+  if (state.scanCount % 5 !== 0) return;
+
+  try {
+    const https = await import("node:https");
+    const dns = await import("node:dns");
+    dns.setDefaultResultOrder("ipv4first");
+
+    const EOA = "0x33f2c6D0ADe8f914E31E4092A34b629b17294Fc0";
+    const data = await new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("timeout")), 15000);
+      const req = https.get(
+        `https://data-api.polymarket.com/positions?user=${EOA}&sizeThreshold=0`,
+        { family: 4 },
+        (res) => {
+          let d = "";
+          res.on("data", (c: Buffer) => { d += c.toString(); });
+          res.on("end", () => { clearTimeout(timer); resolve(d); });
+        }
+      );
+      req.on("error", (e: Error) => { clearTimeout(timer); reject(e); });
+    });
+
+    const positions = JSON.parse(data) as Array<{
+      conditionId: string; title: string; redeemable: boolean;
+      currentValue: number; size: number; curPrice: number; negativeRisk: boolean;
+    }>;
+
+    // Find redeemable positions we haven't claimed yet
+    const toRedeem = positions.filter(p =>
+      p.redeemable === true &&
+      p.currentValue > 0.01 &&
+      !claimedConditionIds.has(p.conditionId)
+    );
+
+    if (toRedeem.length === 0) return;
+
+    console.log(`[AutoRedeem] Found ${toRedeem.length} redeemable positions`);
+
+    // For negRisk positions, try selling on CLOB (safer than CTF redeem)
+    // For non-negRisk, use CTF redeemPositions
+    const { Wallet } = await import("ethers");
+    const pk = process.env.PRIVATE_KEY;
+    if (!pk) return;
+
+    const normalizedKey = pk.startsWith("0x") ? pk : `0x${pk}`;
+
+    for (const pos of toRedeem) {
+      try {
+        if (pos.negativeRisk) {
+          // NegRisk: try selling on CLOB at 99¢
+          console.log(`[AutoRedeem] Selling negRisk position: ${pos.title.slice(0, 40)} (\$${pos.currentValue.toFixed(2)})`);
+          // Skip for now — CLOB sell requires token ID which we don't have here
+          // Just log it so user knows
+          console.log(`[AutoRedeem] ⚠️ NegRisk position needs manual claim or CLOB sell`);
+        } else {
+          // Standard: use CTF redeemPositions
+          const { createWalletClient, createPublicClient, http, parseAbi } = await import("viem");
+          const { privateKeyToAccount } = await import("viem/accounts");
+          const { polygon } = await import("viem/chains");
+
+          const account = privateKeyToAccount(normalizedKey as `0x${string}`);
+          const rpc = process.env.POLYGON_RPC_URL || "https://polygon-bor-rpc.publicnode.com";
+          const wc = createWalletClient({ account, chain: polygon, transport: http(rpc, { timeout: 30000 }) });
+          const pc = createPublicClient({ chain: polygon, transport: http(rpc, { timeout: 30000 }) });
+
+          const CTF = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045" as const;
+          const USDC = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174" as const;
+          const ZERO = "0x0000000000000000000000000000000000000000000000000000000000000000" as `0x${string}`;
+          const ctfAbi = parseAbi(["function redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] indexSets) external"]);
+
+          const hash = await wc.writeContract({
+            address: CTF, abi: ctfAbi, functionName: "redeemPositions",
+            args: [USDC, ZERO, pos.conditionId as `0x${string}`, [BigInt(1), BigInt(2)]],
+          });
+          await pc.waitForTransactionReceipt({ hash });
+          claimedConditionIds.add(pos.conditionId);
+          console.log(`[AutoRedeem] ✅ Claimed: ${pos.title.slice(0, 40)} — TX: ${hash}`);
+        }
+      } catch (e) {
+        console.error(`[AutoRedeem] ❌ Failed: ${pos.title.slice(0, 40)} — ${e instanceof Error ? e.message.slice(0, 80) : e}`);
+      }
+    }
+  } catch (e) {
+    // Silent — will retry next cycle
+  }
+}
+
+// ── Auto-resolve: check if markets have resolved ────────────────────────────
+
+async function autoResolveTrades() {
+  const openTrades = state.trades.filter(t => t.status === "open");
+  if (openTrades.length === 0) return;
+
+  for (const trade of openTrades) {
+    try {
+      // Check if market has resolved by fetching current price
+      // Price of 0 or 1 (within tolerance) means resolved
+      const tokenInfo = await getMarketTokenInfo(trade.marketId, trade.direction);
+      if (!tokenInfo) continue;
+
+      const price = await getOrderbookBestPrice(tokenInfo.tokenId, "buy");
+      const bidPrice = await getOrderbookBestPrice(tokenInfo.tokenId, "sell");
+
+      // Market resolved if: price >= 0.99 (YES won) or price <= 0.01 (NO won)
+      // Or if no orderbook at all and expiry has passed
+      let resolved = false;
+      let won = false;
+
+      if (price !== null && price >= 0.99) {
+        // YES token is worth $1 = YES won
+        resolved = true;
+        won = trade.direction === "BUY_YES";
+      } else if (price !== null && bidPrice !== null && bidPrice <= 0.01 && price <= 0.05) {
+        // YES token worthless = NO won
+        resolved = true;
+        won = trade.direction === "BUY_NO";
+      } else if (trade.expiryDate) {
+        // Check if past expiry
+        const expiry = new Date(trade.expiryDate);
+        if (expiry.getTime() < Date.now() - 86_400_000) {
+          // Past expiry by >1 day — try to determine outcome from price
+          if (price !== null) {
+            resolved = true;
+            if (trade.direction === "BUY_YES") {
+              won = price > 0.5;
+            } else {
+              won = price < 0.5;
+            }
+          }
+        }
+      }
+
+      if (resolved) {
+        closePaperTrade(trade.id, won ? "won" : "lost");
+        console.log(`[AutoTrader] Auto-resolved: ${won ? "WON" : "LOST"} "${trade.marketQuestion.slice(0, 50)}" | P&L: $${trade.pnl?.toFixed(2)}`);
+      }
+    } catch {
+      // Silent — will retry next cycle
+    }
+  }
+}
+
+// ── Stats export for Obsidian ───────────────────────────────────────────────
+
+export interface TradeStats {
+  mode: string;
+  totalTrades: number;
+  openTrades: number;
+  closedTrades: number;
+  wins: number;
+  losses: number;
+  winRate: number;
+  totalPnl: number;
+  avgPnl: number;
+  bestTrade: number;
+  worstTrade: number;
+  totalInvested: number;
+  currentBalance: number;
+  byStrategy: Record<string, { trades: number; wins: number; losses: number; pnl: number }>;
+  recentTrades: Array<{
+    market: string;
+    direction: string;
+    entry: number;
+    size: number;
+    status: string;
+    pnl: number | null;
+    timestamp: string;
+    strategy: string;
+  }>;
+}
+
+export function getTradeStats(): { paper: TradeStats; live: TradeStats } {
+  const buildStats = (mode: string): TradeStats => {
+    const trades = state.trades.filter(t => mode === "all" || t.mode === mode);
+    const closed = trades.filter(t => t.status === "won" || t.status === "lost");
+    const wins = closed.filter(t => t.status === "won");
+    const losses = closed.filter(t => t.status === "lost");
+    const open = trades.filter(t => t.status === "open" || t.status === "pending");
+
+    const pnls = closed.map(t => t.pnl || 0);
+
+    const byStrategy: Record<string, { trades: number; wins: number; losses: number; pnl: number }> = {};
+    for (const t of trades) {
+      const strat = (t as unknown as { _strategy?: string })._strategy || "unknown";
+      if (!byStrategy[strat]) byStrategy[strat] = { trades: 0, wins: 0, losses: 0, pnl: 0 };
+      byStrategy[strat].trades++;
+      if (t.status === "won") byStrategy[strat].wins++;
+      if (t.status === "lost") byStrategy[strat].losses++;
+      byStrategy[strat].pnl += t.pnl || 0;
+    }
+
+    return {
+      mode,
+      totalTrades: trades.length,
+      openTrades: open.length,
+      closedTrades: closed.length,
+      wins: wins.length,
+      losses: losses.length,
+      winRate: closed.length > 0 ? Math.round(wins.length / closed.length * 100) : 0,
+      totalPnl: Math.round(pnls.reduce((s, p) => s + p, 0) * 100) / 100,
+      avgPnl: pnls.length > 0 ? Math.round(pnls.reduce((s, p) => s + p, 0) / pnls.length * 100) / 100 : 0,
+      bestTrade: pnls.length > 0 ? Math.max(...pnls) : 0,
+      worstTrade: pnls.length > 0 ? Math.min(...pnls) : 0,
+      totalInvested: Math.round(open.reduce((s, t) => s + t.size, 0) * 100) / 100,
+      currentBalance: mode === "paper" ? state.paperBalance : state.bankroll,
+      byStrategy,
+      recentTrades: trades.slice(-20).reverse().map(t => ({
+        market: t.marketQuestion,
+        direction: t.direction,
+        entry: t.entryPrice,
+        size: t.size,
+        status: t.status,
+        pnl: t.pnl ?? null,
+        timestamp: t.timestamp,
+        strategy: (t as unknown as { _strategy?: string })._strategy || "unknown",
+      })),
+    };
+  };
+
+  return {
+    paper: buildStats("paper"),
+    live: buildStats("live"),
+  };
 }

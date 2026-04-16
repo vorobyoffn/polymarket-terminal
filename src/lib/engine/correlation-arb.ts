@@ -4,13 +4,33 @@
 
 const GAMMA_API = process.env.GAMMA_API_URL || "https://gamma-api.polymarket.com";
 
-async function cloudGet<T>(url: string, timeoutMs = 10000): Promise<T> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const res = await fetch(url, { signal: controller.signal });
-  clearTimeout(timer);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return (await res.json()) as T;
+async function cloudGet<T>(url: string, timeoutMs = 30000): Promise<T> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const https = await import("node:https");
+      const dns = await import("node:dns");
+      // Force IPv4 to avoid ENETUNREACH on IPv6
+      dns.setDefaultResultOrder("ipv4first");
+
+      return await new Promise<T>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("timeout")), timeoutMs);
+        const req = https.get(url, { family: 4 }, (res) => {
+          let data = "";
+          res.on("data", (c: Buffer) => { data += c.toString(); });
+          res.on("end", () => {
+            clearTimeout(timer);
+            if (res.statusCode && res.statusCode >= 400) return reject(new Error(`HTTP ${res.statusCode}`));
+            try { resolve(JSON.parse(data) as T); } catch { reject(new Error("JSON parse failed")); }
+          });
+        });
+        req.on("error", (e: Error) => { clearTimeout(timer); reject(e); });
+      });
+    } catch (e) {
+      if (attempt === 2) throw e;
+      await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
+    }
+  }
+  throw new Error("cloudGet failed");
 }
 
 // ── Types ────────────────────────────────────────────────────────────────────

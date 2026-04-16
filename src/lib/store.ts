@@ -52,9 +52,9 @@ interface AppState {
 export const useStore = create<AppState>()(
   persist(
     (set) => ({
-      tradingMode: "paper",
+      tradingMode: "live",
       setTradingMode: (mode) => set({ tradingMode: mode }),
-      balance: 10000,
+      balance: 518,
       setBalance: (balance) => set({ balance }),
       privateKey: "",
       setPrivateKey: (privateKey) => set({ privateKey }),
@@ -71,6 +71,14 @@ export const useStore = create<AppState>()(
       updateCopyTarget: (addr, u) => set((s) => ({ copyTargets: s.copyTargets.map((t) => t.address === addr ? { ...t, ...u } : t) })),
       removeCopyTarget: (addr) => set((s) => ({ copyTargets: s.copyTargets.filter((t) => t.address !== addr) })),
     }),
-    { name: "polymarket-terminal-store" }
+    {
+      name: "polymarket-terminal-store",
+      version: 2,
+      migrate: (persisted: unknown) => {
+        const state = persisted as Record<string, unknown>;
+        // Force live mode and reset paper balance
+        return { ...state, tradingMode: "live", balance: 518 };
+      },
+    }
   )
 );

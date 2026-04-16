@@ -5,7 +5,7 @@
   --color-bg-secondary:  #0d1117;
   --color-bg-tertiary:   #161b22;
   --color-border:        #21262d;
-  --color-accent-cyan:   #00d4d4;
+  --color-accent-cyan:   #e8751a;
   --color-accent-green:  #00ff88;
   --color-accent-yellow: #f0c000;
   --color-accent-red:    #ff4444;
@@ -29,8 +29,10 @@ html, body {
 ::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 2px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--color-text-muted); }
 
+.tnum { font-variant-numeric: tabular-nums; }
+
 .glow-green { text-shadow: 0 0 8px var(--color-accent-green); }
-.glow-cyan  { text-shadow: 0 0 8px var(--color-accent-cyan); }
+.glow-cyan  { text-shadow: 0 0 8px #e8751a; }
 
 @keyframes blink {
   0%, 100% { opacity: 1; }
