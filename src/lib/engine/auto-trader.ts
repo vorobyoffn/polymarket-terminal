@@ -755,8 +755,10 @@ async function scanAndTrade() {
     let executed = 0;
     const openTrades2 = state.trades.filter(t => t.status === "open" || t.status === "pending");
     const totalAllocated = openTrades2.reduce((s, t) => s + t.size, 0);
+    // Rolling 24-hour window — trades age out continuously instead of a calendar-day reset
+    const twentyFourHoursAgo = Date.now() - 24 * 60 * 60 * 1000;
     const dailySpent = state.trades
-      .filter(t => new Date(t.timestamp).toDateString() === new Date().toDateString())
+      .filter(t => new Date(t.timestamp).getTime() > twentyFourHoursAgo)
       .reduce((s, t) => s + t.size, 0);
 
     for (const signal of scored) {
@@ -769,9 +771,9 @@ async function scanAndTrade() {
         break;
       }
 
-      // Daily spend cap: 40% of bankroll
+      // Rolling 24h spend cap: 40% of bankroll
       if (dailySpent > state.bankroll * 0.40) {
-        console.log(`[AutoTrader] Daily limit reached: $${dailySpent.toFixed(0)} spent today`);
+        console.log(`[AutoTrader] 24h rolling limit reached: $${dailySpent.toFixed(0)} spent in last 24h`);
         break;
       }
 
