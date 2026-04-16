@@ -73,6 +73,7 @@ export interface AutoTraderState {
   totalPnl: number;
   winRate: number;
   error: string | null;
+  lastOrderError: { timestamp: string; market: string; response: string } | null;
 }
 
 interface MarketTokenInfo {
@@ -99,6 +100,7 @@ let state: AutoTraderState = {
   totalPnl: 0,
   winRate: 0,
   error: null,
+  lastOrderError: null,
 };
 
 let scanTimer: ReturnType<typeof setInterval> | null = null;
@@ -463,10 +465,25 @@ async function executeLiveTrade(signal: BtcSignal): Promise<TradeRecord | null> 
       "GTC"
     );
 
-    console.log(`[CLOB] Order response:`, JSON.stringify(order).slice(0, 300));
+    const orderResponseStr = JSON.stringify(order).slice(0, 400);
+    console.log(`[CLOB] Order response:`, orderResponseStr);
 
     const orderStatus = order?.status || order?.orderStatus || "unknown";
     const orderId = order?.orderID || order?.id || order?.order_id || "";
+
+    // Phantom-trade guard: if CLOB didn't return an orderId, the order did NOT post.
+    // Record the rejection reason for diagnostics and skip adding to state (avoids
+    // consuming daily cap on orders that never executed).
+    if (!orderId) {
+      const reason = order?.errorMsg || order?.error || order?.message || orderStatus || "no orderId returned";
+      state.lastOrderError = {
+        timestamp: new Date().toISOString(),
+        market: signal.marketQuestion.slice(0, 80),
+        response: orderResponseStr,
+      };
+      console.error(`[AutoTrader] ❌ CLOB rejected order on "${signal.marketQuestion.slice(0, 50)}": ${reason}`);
+      return null;
+    }
 
     const shares = betSize / finalPrice;
     const trade: TradeRecord = {
