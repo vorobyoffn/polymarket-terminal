@@ -24,6 +24,7 @@ export async function GET() {
       title: string; outcome: string; size: number; avgPrice: number;
       curPrice: number; initialValue: number; currentValue: number;
       cashPnl: number; percentPnl: number; endDate: string; icon: string;
+      conditionId: string; redeemable: boolean; negativeRisk: boolean;
     }>;
 
     // Categorize
@@ -132,7 +133,7 @@ export async function GET() {
         const body = JSON.stringify({jsonrpc:"2.0",method:"eth_call",params:[{to:"0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",data:"0x70a0823100000000000000000000000033f2c6d0ade8f914e31e4092a34b629b17294fc0"},"latest"],id:1});
         const rpcUrl = new URL(process.env.POLYGON_RPC_URL || "https://polygon-bor-rpc.publicnode.com");
         const req2 = https2.request({hostname:rpcUrl.hostname,port:443,path:rpcUrl.pathname,method:"POST",family:4,headers:{"Content-Type":"application/json","Content-Length":Buffer.byteLength(body)}}, (res: { on: (event: string, cb: (data?: Buffer) => void) => void }) => {
-          let d2 = ""; res.on("data", (c: Buffer) => d2 += c.toString()); res.on("end", () => { clearTimeout(timer2); resolve(d2); });
+          let d2 = ""; res.on("data", (c?: Buffer) => { if (c) d2 += c.toString(); }); res.on("end", () => { clearTimeout(timer2); resolve(d2); });
         });
         req2.on("error", () => { clearTimeout(timer2); resolve("{}"); });
         req2.write(body); req2.end();

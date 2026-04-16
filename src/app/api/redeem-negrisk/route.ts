@@ -106,15 +106,15 @@ export async function POST(req: Request) {
         balanceAtoms = BigInt(Math.floor(pos.size * 1_000_000));
       }
 
-      if (balanceAtoms === 0n) {
+      if (balanceAtoms === BigInt(0)) {
         results.push(`  skip: zero balance on-chain (asset already redeemed or merged)`);
         continue;
       }
 
       // outcomeIndex 0 = YES (amounts[0]), outcomeIndex 1 = NO (amounts[1])
       const amounts: [bigint, bigint] = pos.outcomeIndex === 0
-        ? [balanceAtoms, 0n]
-        : [0n, balanceAtoms];
+        ? [balanceAtoms, BigInt(0)]
+        : [BigInt(0), balanceAtoms];
       results.push(`  balance=${balanceAtoms.toString()} atoms, amounts=[${amounts[0].toString()}, ${amounts[1].toString()}]`);
 
       // Try NegRiskAdapter first (correct path for negRisk markets)

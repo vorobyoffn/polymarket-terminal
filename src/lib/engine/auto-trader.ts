@@ -54,6 +54,7 @@ export interface TradeRecord {
   orderId?: string;
   exitPrice?: number;
   pnl?: number;
+  expiryDate?: string;
 }
 
 export interface AutoTraderState {
