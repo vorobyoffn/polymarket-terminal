@@ -108,7 +108,7 @@ export default function Dashboard() {
       <div className="flex-1 overflow-y-auto">
         {/* ── HERO: Portfolio Value ── */}
         <div className="px-6 py-5 bg-bg-secondary border-b border-border">
-          <div className="grid grid-cols-[1fr_1fr_1fr_1fr] gap-6">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-6">
             <div>
               <div className="text-text-muted text-[10px] uppercase tracking-wider mb-1">Total Portfolio</div>
               <div className="text-3xl font-mono font-bold text-text-primary tnum">${totalPortfolio.toFixed(2)}</div>
@@ -151,7 +151,7 @@ export default function Dashboard() {
         {/* ── STRATEGY P&L BREAKDOWN ── */}
         <div className="px-6 py-4 border-b border-border">
           <div className="text-text-muted text-[10px] uppercase tracking-widest mb-3">Strategy Performance</div>
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {/* Weather */}
             <div className="bg-bg-secondary border border-border rounded-lg p-4">
               <div className="flex items-center gap-2 mb-3">
@@ -270,7 +270,7 @@ export default function Dashboard() {
         </div>
 
         {/* ── TOP MOVERS ── */}
-        <div className="px-6 py-4 border-b border-border grid grid-cols-2 gap-6">
+        <div className="px-6 py-4 border-b border-border grid grid-cols-1 md:grid-cols-2 gap-6">
           {/* Top Winners */}
           <div>
             <div className="text-text-muted text-[10px] uppercase tracking-widest mb-2 flex items-center gap-1">
@@ -326,13 +326,14 @@ export default function Dashboard() {
             </Link>
           </div>
 
-          <div className="grid grid-cols-[minmax(0,2.5fr)_56px_56px_56px_64px_64px] gap-2 px-2 py-1.5 text-[9px] text-text-muted uppercase tracking-wider border-b border-border">
+          <div className="overflow-x-auto">
+          <div className="grid grid-cols-[minmax(0,2.5fr)_56px_56px_56px_64px_64px] gap-2 px-2 py-1.5 text-[9px] text-text-muted uppercase tracking-wider border-b border-border min-w-[500px]">
             <span>Market</span><span>Side</span><span>Odds</span><span>Entry</span><span className="text-right">Value</span><span className="text-right">P&L</span>
           </div>
 
           <div className="max-h-[300px] overflow-y-auto">
             {positions.map((p, i) => (
-              <div key={i} className={`grid grid-cols-[minmax(0,2.5fr)_56px_56px_56px_64px_64px] gap-2 px-2 py-2 items-center text-xs border-b border-border ${i % 2 === 1 ? "bg-bg-tertiary/10" : ""}`}>
+              <div key={i} className={`grid grid-cols-[minmax(0,2.5fr)_56px_56px_56px_64px_64px] gap-2 px-2 py-2 items-center text-xs border-b border-border min-w-[500px] ${i % 2 === 1 ? "bg-bg-tertiary/10" : ""}`}>
                 <div className="flex items-center gap-2 min-w-0">
                   {p.icon && <img src={p.icon} alt="" className="w-4 h-4 rounded flex-shrink-0" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />}
                   <span className="text-text-primary truncate text-[11px] leading-tight">{p.title}</span>
@@ -347,12 +348,13 @@ export default function Dashboard() {
               </div>
             ))}
           </div>
+          </div>
         </div>
 
         {/* ── QUICK LINKS ── */}
         <div className="px-6 py-4">
           <div className="text-text-muted text-[10px] uppercase tracking-widest mb-3">Quick Access</div>
-          <div className="grid grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             {[
               { href: "/positions", icon: Layers, label: "Positions", desc: "Full portfolio view" },
               { href: "/weather", icon: CloudRain, label: "Weather Arb", desc: "Live weather signals" },

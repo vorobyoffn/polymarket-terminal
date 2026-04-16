@@ -6,6 +6,7 @@ import { useState, useEffect, useCallback } from "react";
 import {
   LayoutDashboard, TrendingUp, Wallet, Copy, Bot, BarChart3,
   Settings, Activity, CloudRain, Bitcoin, RefreshCw, Layers,
+  Menu, X,
 } from "lucide-react";
 import { useStore } from "@/lib/store";
 
@@ -45,6 +46,7 @@ export default function Sidebar() {
   const [walletBal, setWalletBal] = useState<WalletBalance | null>(null);
   const [portfolio, setPortfolio] = useState<PortfolioSummary | null>(null);
   const [loading, setLoading] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
 
   const fetchBalance = useCallback(async () => {
     if (tradingMode !== "live") return;
@@ -65,21 +67,30 @@ export default function Sidebar() {
 
   useEffect(() => {
     fetchBalance();
-    const id = setInterval(fetchBalance, 15000); // poll every 15s
+    const id = setInterval(fetchBalance, 15000);
     return () => clearInterval(id);
   }, [fetchBalance]);
+
+  // Close drawer on route change
+  useEffect(() => {
+    setMobileOpen(false);
+  }, [pathname]);
 
   const displayBalance = tradingMode === "live" && walletBal
     ? walletBal.totalUsdc
     : balance;
 
-  return (
-    <aside className="w-56 bg-bg-secondary border-r border-border flex flex-col h-screen fixed left-0 top-0">
+  const sidebarContent = (
+    <>
       {/* Logo */}
       <div className="p-4 border-b border-border">
         <div className="flex items-center gap-2">
           <Activity className="w-5 h-5" style={{ color: "#e8751a" }} />
           <span className="font-bold text-sm tracking-wider" style={{ color: "#e8751a" }}>ARRAKIS</span>
+          {/* Close button on mobile */}
+          <button className="ml-auto md:hidden p-1" onClick={() => setMobileOpen(false)}>
+            <X className="w-5 h-5 text-text-muted" />
+          </button>
         </div>
         <div className="text-text-muted text-[10px] mt-1 tracking-widest uppercase">Trading Terminal</div>
       </div>
@@ -109,7 +120,7 @@ export default function Sidebar() {
             </div>
             <div className="flex justify-between">
               <span>Positions:</span>
-              <span>${portfolio ? portfolio.current.toFixed(2) : "—"}</span>
+              <span>${portfolio ? portfolio.current.toFixed(2) : "\u2014"}</span>
             </div>
           </div>
         )}
@@ -146,6 +157,46 @@ export default function Sidebar() {
           </div>
         )}
       </div>
-    </aside>
+    </>
+  );
+
+  return (
+    <>
+      {/* ── Mobile top bar ── */}
+      <div className="md:hidden fixed top-0 left-0 right-0 z-50 bg-bg-secondary border-b border-border flex items-center justify-between px-4 py-2.5">
+        <div className="flex items-center gap-2">
+          <Activity className="w-4 h-4" style={{ color: "#e8751a" }} />
+          <span className="font-bold text-xs tracking-wider" style={{ color: "#e8751a" }}>ARRAKIS</span>
+        </div>
+        <div className="flex items-center gap-3">
+          <span className="text-text-primary text-sm font-mono font-bold" style={{ fontVariantNumeric: "tabular-nums" }}>
+            ${portfolio ? portfolio.totalPortfolio.toLocaleString("en-US", { minimumFractionDigits: 2 }) : displayBalance.toLocaleString("en-US", { minimumFractionDigits: 2 })}
+          </span>
+          <button onClick={() => setMobileOpen(true)} className="p-1">
+            <Menu className="w-5 h-5 text-text-primary" />
+          </button>
+        </div>
+      </div>
+
+      {/* ── Mobile spacer (prevents content from hiding behind fixed bar) ── */}
+      <div className="md:hidden h-11" />
+
+      {/* ── Desktop sidebar ── */}
+      <aside className="hidden md:flex w-56 bg-bg-secondary border-r border-border flex-col h-screen fixed left-0 top-0 z-40">
+        {sidebarContent}
+      </aside>
+
+      {/* ── Mobile drawer overlay ── */}
+      {mobileOpen && (
+        <div className="md:hidden fixed inset-0 z-50 flex">
+          {/* Backdrop */}
+          <div className="absolute inset-0 bg-black/60" onClick={() => setMobileOpen(false)} />
+          {/* Drawer */}
+          <aside className="relative w-64 bg-bg-secondary border-r border-border flex flex-col h-full z-10">
+            {sidebarContent}
+          </aside>
+        </div>
+      )}
+    </>
   );
 }

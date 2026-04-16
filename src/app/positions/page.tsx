@@ -249,7 +249,7 @@ export default function PositionsPage() {
       {/* ── P&L Summary Banner ── */}
       {stats && (
         <div className="px-6 py-4 border-b border-border bg-bg-secondary">
-          <div className="grid grid-cols-8 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4">
             <div className="col-span-2">
               <div className="text-text-muted text-[10px] uppercase tracking-wider mb-1">Portfolio Value</div>
               <div className="text-2xl font-mono font-bold text-text-primary tnum">${stats.totalCurrent.toFixed(2)}</div>
@@ -268,7 +268,7 @@ export default function PositionsPage() {
       )}
 
       {/* ── Tabs + Search ── */}
-      <div className="px-6 py-2 border-b border-border flex items-center gap-2">
+      <div className="px-4 md:px-6 py-2 border-b border-border flex items-center gap-2 overflow-x-auto">
         {([
           { key: "live" as TabKey, label: "Positions", count: positions.length, icon: Layers },
           { key: "orders" as TabKey, label: "Open Orders", count: liveData?.openOrders?.length || 0, icon: Clock },
@@ -320,9 +320,10 @@ export default function PositionsPage() {
               <div className="text-text-muted text-sm">{searchQuery ? "No positions match" : "No open positions"}</div>
             </div>
           ) : (
+            <div className="overflow-x-auto">
             <>
               {/* Header */}
-              <div className="grid grid-cols-[minmax(0,3fr)_64px_64px_64px_56px_72px_72px_56px] gap-2 px-4 py-2 border-b border-border sticky top-0 z-10 bg-bg-secondary text-[10px] text-text-muted uppercase tracking-wider">
+              <div className="grid grid-cols-[minmax(0,3fr)_64px_64px_64px_56px_72px_72px_56px] gap-2 px-4 py-2 border-b border-border sticky top-0 z-10 bg-bg-secondary text-[10px] text-text-muted uppercase tracking-wider min-w-[700px]">
                 <SortBtn label="Market" k="name" current={sortKey} dir={sortDir} onToggle={toggleSort} />
                 <span className="text-center">Outcome</span>
                 <SortBtn label="Odds" k="price" current={sortKey} dir={sortDir} onToggle={toggleSort} align="right" />
@@ -346,7 +347,7 @@ export default function PositionsPage() {
               ))}
 
               {/* Totals */}
-              <div className="grid grid-cols-[minmax(0,3fr)_64px_64px_64px_56px_72px_72px_56px] gap-2 px-4 py-2 border-t border-border sticky bottom-0 bg-bg-secondary z-10 text-xs font-mono font-bold">
+              <div className="grid grid-cols-[minmax(0,3fr)_64px_64px_64px_56px_72px_72px_56px] gap-2 px-4 py-2 border-t border-border sticky bottom-0 bg-bg-secondary z-10 text-xs font-mono font-bold min-w-[700px]">
                 <span className="text-text-muted text-[10px] uppercase">Total ({sorted.length})</span>
                 <span />
                 <span />
@@ -359,6 +360,7 @@ export default function PositionsPage() {
                 <span />
               </div>
             </>
+            </div>
           )
         )}
 
@@ -578,7 +580,7 @@ function PositionRow({ pos, isExpanded, isOdd, onToggle, onRefresh }: {
       {/* Expanded */}
       {isExpanded && (
         <div className="px-6 py-3 bg-bg-tertiary/20 border-b border-border">
-          <div className="grid grid-cols-5 gap-4 text-xs">
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-4 text-xs">
             <div>
               <div className="text-text-muted text-[10px] uppercase mb-1">Cost Basis</div>
               <div className="font-mono text-text-primary tnum">${pos.initialValue.toFixed(2)}</div>
