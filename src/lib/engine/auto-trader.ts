@@ -791,8 +791,8 @@ async function scanAndTrade() {
         break;
       }
 
-      // Rolling 24h spend cap: 40% of bankroll
-      if (dailySpent > state.bankroll * 0.40) {
+      // Rolling 24h spend cap: 50% of bankroll
+      if (dailySpent > state.bankroll * 0.50) {
         console.log(`[AutoTrader] 24h rolling limit reached: $${dailySpent.toFixed(0)} spent in last 24h`);
         break;
       }
