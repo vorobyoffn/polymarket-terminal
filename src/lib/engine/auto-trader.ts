@@ -162,6 +162,37 @@ async function getOrderbookBestPrice(tokenId: string, side: "buy" | "sell"): Pro
   }
 }
 
+/**
+ * Public: fetch top-of-book for a token. Returns best bid + ask + cumulative
+ * size at each. Used by the Sell UI so the user can set a smart limit price
+ * instead of always taking best-bid (eating the spread).
+ */
+export async function getOrderbookTop(tokenId: string): Promise<{
+  bid: number | null;
+  ask: number | null;
+  bidSize: number;
+  askSize: number;
+  spread: number | null;
+  mid: number | null;
+}> {
+  try {
+    const book = await cloudGet<{
+      bids: { price: string; size: string }[];
+      asks: { price: string; size: string }[];
+    }>(`${CLOB_API}/book?token_id=${tokenId}`, 6000);
+
+    const bid = book.bids.length > 0 ? parseFloat(book.bids[0].price) : null;
+    const ask = book.asks.length > 0 ? parseFloat(book.asks[0].price) : null;
+    const bidSize = book.bids.length > 0 ? parseFloat(book.bids[0].size) : 0;
+    const askSize = book.asks.length > 0 ? parseFloat(book.asks[0].size) : 0;
+    const spread = bid !== null && ask !== null ? ask - bid : null;
+    const mid = bid !== null && ask !== null ? Math.round(((bid + ask) / 2) * 1000) / 1000 : null;
+    return { bid, ask, bidSize, askSize, spread, mid };
+  } catch {
+    return { bid: null, ask: null, bidSize: 0, askSize: 0, spread: null, mid: null };
+  }
+}
+
 function updateStats() {
   const closed = state.trades.filter((t) => t.status === "won" || t.status === "lost");
   state.totalPnl = closed.reduce((s, t) => s + (t.pnl || 0), 0);
@@ -534,6 +565,7 @@ async function executeLiveTrade(signal: BtcSignal): Promise<TradeRecord | null> 
 // Extended trigger type that supports manual exits too.
 type SellTrigger = Omit<import("./exit-checker").ExitTrigger, "reason"> & {
   reason: "edge_flip" | "forecast_diverged" | "manual";
+  limitPrice?: number; // explicit limit; if omitted, defaults to best bid (take spread)
 };
 
 // Public wrapper for manual sells (from /api/close-position UI).
@@ -547,6 +579,7 @@ export async function executeManualSell(args: {
   negRisk: boolean;
   currentPrice: number;
   entryPrice: number;
+  limitPrice?: number;
 }): Promise<{ ok: boolean; orderId?: string; error?: string; price?: number }> {
   try {
     const trigger: SellTrigger = {
@@ -554,6 +587,7 @@ export async function executeManualSell(args: {
       reason: "manual",
       currentEdge: 0,
       currentProb: 0,
+      limitPrice: args.limitPrice,
     };
     const res = await executeExitSellInternal(trigger);
     return res;
@@ -576,17 +610,24 @@ async function executeExitSellInternal(trigger: SellTrigger): Promise<{ ok: bool
   try {
     const authedClient = await getAuthenticatedClobClient();
 
-    // Best bid = what someone will pay us. Take the aggressive floor so it fills.
-    const bestBid = await getOrderbookBestPrice(trigger.tokenId, "sell");
-    if (!bestBid || bestBid < 0.01) {
-      console.log(`[Sell] ❌ No bid liquidity for "${trigger.title.slice(0, 50)}" (bestBid=${bestBid})`);
-      return { ok: false, error: "no bid liquidity on orderbook" };
-    }
-
     const tickSize = "0.01"; // default for weather markets
     const tick = parseFloat(tickSize);
-    // Price: best bid rounded DOWN to tick (ensures fill at or above this)
-    const price = Math.floor(bestBid / tick) * tick;
+    let price: number;
+
+    if (typeof trigger.limitPrice === "number" && trigger.limitPrice > 0) {
+      // User-specified limit. Round to tick. GTC order sits in book until filled.
+      price = Math.round(trigger.limitPrice / tick) * tick;
+      price = Math.max(tick, Math.min(1 - tick, price)); // clamp to (0, 1)
+      console.log(`[Sell] Using USER limit price ${price} (raw=${trigger.limitPrice})`);
+    } else {
+      // Default (used by auto-exit): best bid, rounded DOWN. Eats the spread but fills fast.
+      const bestBid = await getOrderbookBestPrice(trigger.tokenId, "sell");
+      if (!bestBid || bestBid < 0.01) {
+        console.log(`[Sell] ❌ No bid liquidity for "${trigger.title.slice(0, 50)}" (bestBid=${bestBid})`);
+        return { ok: false, error: "no bid liquidity on orderbook" };
+      }
+      price = Math.floor(bestBid / tick) * tick;
+    }
 
     console.log(`[Sell] Placing SELL ${trigger.tokenId.slice(0, 12)}... @ ${price} size=${trigger.size.toFixed(2)} reason=${trigger.reason}`);
 

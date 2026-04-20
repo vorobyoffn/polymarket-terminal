@@ -14,6 +14,7 @@ export async function POST(req: Request) {
       negRisk?: boolean;
       currentPrice?: number;
       entryPrice?: number;
+      limitPrice?: number;   // optional; omit for "take best bid" behavior
     };
 
     const tokenId = body.tokenId;
@@ -22,6 +23,9 @@ export async function POST(req: Request) {
     const size = body.size;
     const title = body.title;
     const negRisk = body.negRisk;
+    const limitPrice = typeof body.limitPrice === "number" && body.limitPrice > 0
+      ? body.limitPrice
+      : undefined;
 
     if (!tokenId || !conditionId || typeof outcomeIndex !== "number" || typeof size !== "number" || size <= 0) {
       return Response.json({
@@ -39,6 +43,7 @@ export async function POST(req: Request) {
       negRisk: !!negRisk,
       currentPrice: body.currentPrice || 0,
       entryPrice: body.entryPrice || 0,
+      limitPrice,
     });
 
     if (!result.ok) {

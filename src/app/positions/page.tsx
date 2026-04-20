@@ -494,11 +494,77 @@ function PositionRow({ pos, isExpanded, isOdd, onToggle, onRefresh }: {
 
   const isLive = !isResolved && pos.curPrice > 0.01 && pos.curPrice < 0.99;
 
-  const handleSell = async (e: React.MouseEvent) => {
+  // Sell form state
+  const [sellFormOpen, setSellFormOpen] = useState(false);
+  const [orderbook, setOrderbook] = useState<{
+    bid: number | null; ask: number | null; bidSize: number; askSize: number; spread: number | null; mid: number | null;
+  } | null>(null);
+  const [limitPriceCents, setLimitPriceCents] = useState<string>("");
+  const [sellShares, setSellShares] = useState<string>("");
+
+  const openSellForm = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    const gain = pos.cashPnl;
-    const label = `SELL ${pos.outcome} @ market (~${(pos.curPrice * 100).toFixed(1)}¢) for "${pos.title}"?\n\nCurrent value: $${pos.currentValue.toFixed(2)}\nP&L so far: ${gain >= 0 ? "+" : ""}$${gain.toFixed(2)}\n\nThis places a SELL order on CLOB at the best available bid.`;
-    if (!window.confirm(label)) return;
+    setSellFormOpen(true);
+    setSellShares(pos.size.toFixed(2));
+    setAction({ status: "idle" });
+    // Fetch orderbook depth
+    try {
+      const res = await fetch(`/api/orderbook?tokenId=${pos.tokenId}`);
+      if (res.ok) {
+        const ob = await res.json() as typeof orderbook;
+        setOrderbook(ob);
+        // Default: best ask (top of book — save the spread); fallback to bid+1tick; fallback to curPrice
+        const defaultCents = ob?.ask !== null && ob?.ask !== undefined
+          ? (ob.ask * 100).toFixed(1)
+          : ob?.bid !== null && ob?.bid !== undefined
+            ? ((ob.bid + 0.01) * 100).toFixed(1)
+            : (pos.curPrice * 100).toFixed(1);
+        setLimitPriceCents(defaultCents);
+      } else {
+        setLimitPriceCents((pos.curPrice * 100).toFixed(1));
+      }
+    } catch {
+      setLimitPriceCents((pos.curPrice * 100).toFixed(1));
+    }
+  };
+
+  const closeSellForm = () => {
+    setSellFormOpen(false);
+    setOrderbook(null);
+    setLimitPriceCents("");
+    setSellShares("");
+  };
+
+  const submitSell = async (mode: "limit" | "market") => {
+    const sharesNum = parseFloat(sellShares);
+    if (!Number.isFinite(sharesNum) || sharesNum <= 0 || sharesNum > pos.size + 0.01) {
+      setAction({ status: "error", msg: `Invalid size (max ${pos.size.toFixed(2)})` });
+      setTimeout(() => setAction({ status: "idle" }), 5000);
+      return;
+    }
+
+    let limitPrice: number | undefined;
+    if (mode === "limit") {
+      const priceCentsNum = parseFloat(limitPriceCents);
+      if (!Number.isFinite(priceCentsNum) || priceCentsNum <= 0 || priceCentsNum >= 100) {
+        setAction({ status: "error", msg: "Price must be 1-99¢" });
+        setTimeout(() => setAction({ status: "idle" }), 5000);
+        return;
+      }
+      limitPrice = priceCentsNum / 100;
+    }
+    // If mode=="market", omit limitPrice so backend falls back to best-bid
+
+    const proceedsUsd = mode === "limit"
+      ? (limitPrice! * sharesNum).toFixed(2)
+      : orderbook?.bid !== null && orderbook?.bid !== undefined
+        ? (orderbook.bid * sharesNum).toFixed(2)
+        : (pos.curPrice * sharesNum).toFixed(2);
+    const modeLabel = mode === "limit"
+      ? `LIMIT @ ${limitPriceCents}¢`
+      : `MARKET (best bid ~${((orderbook?.bid ?? pos.curPrice) * 100).toFixed(1)}¢)`;
+    if (!window.confirm(`SELL ${sharesNum.toFixed(2)} shares ${pos.outcome} of "${pos.title}"\n\nType: ${modeLabel}\nProceeds estimate: ~$${proceedsUsd}\n\nContinue?`)) return;
+
     setAction({ status: "submitting" });
     try {
       const res = await fetch("/api/close-position", {
@@ -508,11 +574,12 @@ function PositionRow({ pos, isExpanded, isOdd, onToggle, onRefresh }: {
           tokenId: pos.tokenId,
           conditionId: pos.conditionId,
           outcomeIndex: pos.outcomeIndex,
-          size: pos.size,
+          size: sharesNum,
           title: pos.title,
           negRisk: pos.negativeRisk,
           currentPrice: pos.curPrice,
           entryPrice: pos.avgPrice,
+          limitPrice,
         }),
       });
       const body = await res.json().catch(() => ({}));
@@ -521,7 +588,8 @@ function PositionRow({ pos, isExpanded, isOdd, onToggle, onRefresh }: {
         setTimeout(() => setAction({ status: "idle" }), 10000);
         return;
       }
-      setAction({ status: "success", msg: body.message || `Sold at ${((body.price ?? 0) * 100).toFixed(1)}¢` });
+      setAction({ status: "success", msg: body.message || `Placed at ${((body.price ?? 0) * 100).toFixed(1)}¢` });
+      closeSellForm();
       onRefresh();
       setTimeout(() => setAction({ status: "idle" }), 6000);
     } catch (err) {
@@ -705,27 +773,19 @@ function PositionRow({ pos, isExpanded, isOdd, onToggle, onRefresh }: {
               </button>
             )}
 
-            {isLive && (
+            {isLive && !sellFormOpen && (
               <button
-                onClick={handleSell}
+                onClick={openSellForm}
                 disabled={action.status === "submitting"}
                 className={`inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
                   pos.cashPnl >= 0
                     ? "bg-accent-yellow/10 text-accent-yellow border-accent-yellow/40 hover:bg-accent-yellow/20"
                     : "bg-accent-red/10 text-accent-red border-accent-red/40 hover:bg-accent-red/20"
                 }`}
-                title={`Sell ${pos.size.toFixed(2)} shares at best bid (~${(pos.curPrice * 100).toFixed(1)}¢)`}
+                title={`Open sell form for ${pos.size.toFixed(2)} shares`}
               >
-                {action.status === "submitting" ? (
-                  <>
-                    <RefreshCw className="w-2.5 h-2.5 animate-spin" /> Selling…
-                  </>
-                ) : (
-                  <>
-                    <XCircle className="w-2.5 h-2.5" />
-                    Sell {pos.outcome} ~${(pos.size * pos.curPrice).toFixed(2)}
-                  </>
-                )}
+                <XCircle className="w-2.5 h-2.5" />
+                Sell {pos.outcome} ~${(pos.size * pos.curPrice).toFixed(2)}
               </button>
             )}
 
@@ -740,6 +800,91 @@ function PositionRow({ pos, isExpanded, isOdd, onToggle, onRefresh }: {
               </span>
             )}
           </div>
+
+          {/* ── SELL FORM ── */}
+          {sellFormOpen && (
+            <div className="mt-3 p-3 bg-bg-primary border border-accent-yellow/30 rounded" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-accent-yellow text-[10px] font-bold uppercase tracking-wider">Sell {pos.outcome} — set limit to save the spread</div>
+                <button onClick={closeSellForm} className="text-text-muted hover:text-text-primary text-[10px]">✕ Close</button>
+              </div>
+
+              {/* Orderbook snapshot */}
+              <div className="grid grid-cols-3 gap-3 mb-3 text-[11px]">
+                <div>
+                  <div className="text-text-muted text-[9px] uppercase">Best Bid (market-sell)</div>
+                  <div className="font-mono text-accent-red tnum">
+                    {orderbook?.bid !== null && orderbook?.bid !== undefined ? `${(orderbook.bid * 100).toFixed(1)}¢` : "—"}
+                    {orderbook?.bidSize ? <span className="text-text-muted text-[9px] ml-1">({orderbook.bidSize.toFixed(0)} sh)</span> : null}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-text-muted text-[9px] uppercase">Best Ask (your limit target)</div>
+                  <div className="font-mono text-accent-green tnum">
+                    {orderbook?.ask !== null && orderbook?.ask !== undefined ? `${(orderbook.ask * 100).toFixed(1)}¢` : "—"}
+                    {orderbook?.askSize ? <span className="text-text-muted text-[9px] ml-1">({orderbook.askSize.toFixed(0)} sh)</span> : null}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-text-muted text-[9px] uppercase">Spread</div>
+                  <div className="font-mono text-text-primary tnum">
+                    {orderbook?.spread !== null && orderbook?.spread !== undefined ? `${(orderbook.spread * 100).toFixed(1)}¢` : "—"}
+                  </div>
+                </div>
+              </div>
+
+              {/* Inputs */}
+              <div className="grid grid-cols-[1fr_1fr_auto_auto] gap-2 items-end">
+                <div>
+                  <label className="text-text-muted text-[9px] uppercase block mb-0.5">Limit price (¢)</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={limitPriceCents}
+                    onChange={(e) => setLimitPriceCents(e.target.value)}
+                    className="w-full px-2 py-1 text-xs bg-bg-tertiary border border-border rounded text-text-primary font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="text-text-muted text-[9px] uppercase block mb-0.5">Shares (max {pos.size.toFixed(2)})</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={sellShares}
+                    onChange={(e) => setSellShares(e.target.value)}
+                    className="w-full px-2 py-1 text-xs bg-bg-tertiary border border-border rounded text-text-primary font-mono"
+                  />
+                </div>
+                <button
+                  onClick={() => submitSell("limit")}
+                  disabled={action.status === "submitting"}
+                  className="px-3 py-1 text-[10px] font-bold uppercase bg-accent-green/10 text-accent-green border border-accent-green/40 rounded hover:bg-accent-green/20 disabled:opacity-40"
+                >
+                  {action.status === "submitting" ? "…" : "Place Limit"}
+                </button>
+                <button
+                  onClick={() => submitSell("market")}
+                  disabled={action.status === "submitting"}
+                  title="Sell at best bid now (eats the spread but fills fast)"
+                  className="px-3 py-1 text-[10px] font-bold uppercase bg-accent-red/10 text-accent-red border border-accent-red/40 rounded hover:bg-accent-red/20 disabled:opacity-40"
+                >
+                  Market
+                </button>
+              </div>
+
+              {/* Proceeds estimate */}
+              {limitPriceCents && sellShares && !isNaN(parseFloat(limitPriceCents)) && !isNaN(parseFloat(sellShares)) && (
+                <div className="mt-2 text-[10px] text-text-muted">
+                  Limit proceeds: <span className="font-mono text-text-primary tnum">${(parseFloat(limitPriceCents) / 100 * parseFloat(sellShares)).toFixed(2)}</span>
+                  {orderbook?.bid !== null && orderbook?.bid !== undefined && (
+                    <> — Market proceeds: <span className="font-mono text-accent-red/70 tnum">${(orderbook.bid * parseFloat(sellShares)).toFixed(2)}</span>
+                      <> (save <span className="text-accent-green">${((parseFloat(limitPriceCents) / 100 - orderbook.bid) * parseFloat(sellShares)).toFixed(2)}</span>)</>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </>
