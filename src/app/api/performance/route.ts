@@ -1,7 +1,13 @@
 // Performance data endpoint — provides chart-ready data
 
-export async function GET() {
+const DEFAULT_EOA = process.env.TRADING_ADDRESS || "0x33f2c6D0ADe8f914E31E4092A34b629b17294Fc0";
+
+export async function GET(req: Request) {
   try {
+    const url = new URL(req.url);
+    const queryAddr = url.searchParams.get("address");
+    const eoa = queryAddr && /^0x[a-fA-F0-9]{40}$/.test(queryAddr) ? queryAddr : DEFAULT_EOA;
+
     const https = await import("node:https");
     const dns = await import("node:dns");
     dns.setDefaultResultOrder("ipv4first");
@@ -9,7 +15,7 @@ export async function GET() {
     const data = await new Promise<string>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("timeout")), 15000);
       const req = https.get(
-        `https://data-api.polymarket.com/positions?user=0x33f2c6D0ADe8f914E31E4092A34b629b17294Fc0&sizeThreshold=0`,
+        `https://data-api.polymarket.com/positions?user=${eoa}&sizeThreshold=0`,
         { family: 4 },
         (res) => {
           let d = "";
@@ -130,7 +136,10 @@ export async function GET() {
       const walletData = await new Promise<string>((resolve, reject) => {
         const timer2 = setTimeout(() => reject(new Error("timeout")), 10000);
         const https2 = require("node:https");
-        const body = JSON.stringify({jsonrpc:"2.0",method:"eth_call",params:[{to:"0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",data:"0x70a0823100000000000000000000000033f2c6d0ade8f914e31e4092a34b629b17294fc0"},"latest"],id:1});
+        // balanceOf(eoa) — 0x70a08231 + address padded to 32 bytes
+        const addrPadded = eoa.toLowerCase().replace("0x", "").padStart(64, "0");
+        const callData = `0x70a08231${addrPadded}`;
+        const body = JSON.stringify({jsonrpc:"2.0",method:"eth_call",params:[{to:"0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",data:callData},"latest"],id:1});
         const rpcUrl = new URL(process.env.POLYGON_RPC_URL || "https://polygon-bor-rpc.publicnode.com");
         const req2 = https2.request({hostname:rpcUrl.hostname,port:443,path:rpcUrl.pathname,method:"POST",family:4,headers:{"Content-Type":"application/json","Content-Length":Buffer.byteLength(body)}}, (res: { on: (event: string, cb: (data?: Buffer) => void) => void }) => {
           let d2 = ""; res.on("data", (c?: Buffer) => { if (c) d2 += c.toString(); }); res.on("end", () => { clearTimeout(timer2); resolve(d2); });

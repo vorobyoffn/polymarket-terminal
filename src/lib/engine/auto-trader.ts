@@ -74,6 +74,7 @@ export interface AutoTraderState {
   winRate: number;
   error: string | null;
   lastOrderError: { timestamp: string; market: string; response: string } | null;
+  lossLimit: number | null; // halt bot if totalPnl drops below -lossLimit
 }
 
 interface MarketTokenInfo {
@@ -101,6 +102,7 @@ let state: AutoTraderState = {
   winRate: 0,
   error: null,
   lastOrderError: null,
+  lossLimit: null,
 };
 
 let scanTimer: ReturnType<typeof setInterval> | null = null;
@@ -592,6 +594,14 @@ async function scanAndTrade() {
     state.lastScanTime = new Date().toISOString();
     state.scanCount++;
 
+    // Circuit breaker: loss limit
+    if (state.lossLimit != null && state.totalPnl < -Math.abs(state.lossLimit)) {
+      console.log(`[AutoTrader] ⛔ Loss limit hit — halting. totalPnl=$${state.totalPnl.toFixed(2)} limit=-$${state.lossLimit}`);
+      state.running = false;
+      state.error = `Loss limit reached: $${state.totalPnl.toFixed(2)} < -$${state.lossLimit}`;
+      return;
+    }
+
     const openTrades = state.trades.filter((t) => t.status === "open" || t.status === "pending");
     const slotsAvailable = state.maxConcurrentTrades - openTrades.length;
     if (slotsAvailable <= 0) return;
@@ -600,6 +610,14 @@ async function scanAndTrade() {
     // Record price snapshot for historical data
     try { await recordPriceSnapshot(); } catch (e) {
       console.error("[AutoTrader] Price recording failed:", e instanceof Error ? e.message : e);
+    }
+
+    // Write hourly portfolio snapshot (for drawdown chart on /risk)
+    try {
+      const { maybeWritePortfolioSnapshot } = await import("@/lib/reports/portfolio-snapshot");
+      await maybeWritePortfolioSnapshot();
+    } catch (e) {
+      console.error("[AutoTrader] Portfolio snapshot failed:", e instanceof Error ? e.message : e);
     }
 
     // Auto-resolve any trades whose markets have settled
@@ -863,6 +881,11 @@ export function stopTrader() {
   }
   state.running = false;
   console.log("[AutoTrader] Stopped");
+}
+
+export function setLossLimit(lossLimit: number | null) {
+  state.lossLimit = lossLimit;
+  console.log(`[AutoTrader] Loss limit set to ${lossLimit === null ? "disabled" : "$" + Math.abs(lossLimit)}`);
 }
 
 export function resetTrader() {

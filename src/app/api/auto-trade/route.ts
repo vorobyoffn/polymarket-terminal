@@ -5,6 +5,7 @@ import {
   stopTrader,
   resetTrader,
   closePaperTrade,
+  setLossLimit,
 } from "@/lib/engine/auto-trader";
 
 export async function GET() {
@@ -40,6 +41,11 @@ export async function POST(req: NextRequest) {
         body.tradeId as string,
         body.outcome as "won" | "lost"
       );
+      return Response.json({ ok: true, state: getState() });
+    }
+    case "set_loss_limit": {
+      const lossLimit = body.lossLimit === null ? null : Number(body.lossLimit);
+      setLossLimit(Number.isFinite(lossLimit as number) || lossLimit === null ? lossLimit : null);
       return Response.json({ ok: true, state: getState() });
     }
     default:

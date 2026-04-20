@@ -6,9 +6,11 @@ import { useState, useEffect, useCallback } from "react";
 import {
   LayoutDashboard, TrendingUp, Wallet, Copy, Bot, BarChart3,
   Settings, Activity, CloudRain, Bitcoin, RefreshCw, Layers,
-  Menu, X,
+  Menu, X, AlertTriangle,
 } from "lucide-react";
 import { useStore } from "@/lib/store";
+import { ConnectButton } from "@rainbow-me/rainbowkit";
+import { useAccount } from "wagmi";
 
 const navItems = [
   { href: "/",           label: "Dashboard",      icon: LayoutDashboard },
@@ -21,6 +23,7 @@ const navItems = [
   { href: "/bots",       label: "Custom Bots",     icon: Bot },
   { href: "/positions",  label: "Positions",       icon: BarChart3 },
   { href: "/performance", label: "Performance",    icon: TrendingUp },
+  { href: "/risk",       label: "Risk",            icon: AlertTriangle },
   { href: "/settings",   label: "Settings",        icon: Settings },
 ];
 
@@ -42,11 +45,17 @@ interface PortfolioSummary {
 
 export default function Sidebar() {
   const pathname = usePathname();
-  const { tradingMode, balance } = useStore();
+  const { tradingMode, balance, setConnectedAddress } = useStore();
+  const { address, isConnected } = useAccount();
   const [walletBal, setWalletBal] = useState<WalletBalance | null>(null);
   const [portfolio, setPortfolio] = useState<PortfolioSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+
+  // Keep store in sync with wagmi
+  useEffect(() => {
+    setConnectedAddress(isConnected && address ? address : null);
+  }, [address, isConnected, setConnectedAddress]);
 
   const fetchBalance = useCallback(async () => {
     if (tradingMode !== "live") return;
@@ -124,6 +133,15 @@ export default function Sidebar() {
             </div>
           </div>
         )}
+      </div>
+
+      {/* Wallet Connect */}
+      <div className="px-4 py-3 border-b border-border">
+        <ConnectButton
+          showBalance={false}
+          chainStatus="icon"
+          accountStatus={{ smallScreen: "avatar", largeScreen: "full" }}
+        />
       </div>
 
       {/* Navigation */}

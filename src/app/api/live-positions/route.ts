@@ -2,8 +2,12 @@
 
 import { Wallet } from "ethers";
 
-const EOA_ADDRESS = "0x33f2c6D0ADe8f914E31E4092A34b629b17294Fc0";
+const DEFAULT_EOA = process.env.TRADING_ADDRESS || "0x33f2c6D0ADe8f914E31E4092A34b629b17294Fc0";
 const CLOB_API = process.env.CLOB_API_URL || "https://clob.polymarket.com";
+
+function isValidAddress(addr: string | null): boolean {
+  return !!addr && /^0x[a-fA-F0-9]{40}$/.test(addr);
+}
 
 async function httpGet<T>(url: string, timeoutMs = 15000): Promise<T> {
   const https = await import("node:https");
@@ -45,8 +49,12 @@ async function getClobClient() {
   return new ClobClient(CLOB_API, 137, wallet as any, creds as any, 0);
 }
 
-export async function GET() {
+export async function GET(req: Request) {
   try {
+    const url = new URL(req.url);
+    const queryAddr = url.searchParams.get("address");
+    const eoa = isValidAddress(queryAddr) ? queryAddr! : DEFAULT_EOA;
+
     // ── 1. Fetch live positions from data API ──
     const rawPositions = await httpGet<Array<{
       asset: string; size: number; avgPrice: number; initialValue: number;
@@ -55,7 +63,7 @@ export async function GET() {
       title: string; slug: string; icon: string; eventSlug: string;
       outcome: string; outcomeIndex: number; endDate: string; negativeRisk: boolean;
       conditionId: string; redeemable: boolean;
-    }>>(`https://data-api.polymarket.com/positions?user=${EOA_ADDRESS}&sizeThreshold=0`);
+    }>>(`https://data-api.polymarket.com/positions?user=${eoa}&sizeThreshold=0`);
 
     // Filter out only positions we've actually redeemed (claimed condition IDs)
     const claimedIds = new Set([

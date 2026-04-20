@@ -19,6 +19,8 @@ export interface CopyTarget {
   categories: string[];
 }
 
+export const FALLBACK_TRADING_ADDRESS = "0x33f2c6D0ADe8f914E31E4092A34b629b17294Fc0";
+
 interface AppState {
   // Mode
   tradingMode: TradingMode;
@@ -27,6 +29,10 @@ interface AppState {
   // Balance
   balance: number;
   setBalance: (balance: number) => void;
+
+  // Connected wallet (from wagmi). When null, API calls fall back to FALLBACK_TRADING_ADDRESS.
+  connectedAddress: string | null;
+  setConnectedAddress: (addr: string | null) => void;
 
   // Settings
   privateKey: string;
@@ -56,6 +62,8 @@ export const useStore = create<AppState>()(
       setTradingMode: (mode) => set({ tradingMode: mode }),
       balance: 518,
       setBalance: (balance) => set({ balance }),
+      connectedAddress: null,
+      setConnectedAddress: (connectedAddress) => set({ connectedAddress }),
       privateKey: "",
       setPrivateKey: (privateKey) => set({ privateKey }),
       rpcUrl: "https://polygon-rpc.com",

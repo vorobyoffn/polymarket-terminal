@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import Sidebar from "@/components/layout/Sidebar";
+import Web3Providers from "@/components/providers/Web3Providers";
 
 export const metadata: Metadata = {
   title: "Polymarket Terminal",
@@ -13,10 +14,12 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body className="bg-bg-primary text-text-primary font-mono">
-        <div className="flex min-h-screen">
-          <Sidebar />
-          <main className="flex-1 md:ml-56">{children}</main>
-        </div>
+        <Web3Providers>
+          <div className="flex min-h-screen">
+            <Sidebar />
+            <main className="flex-1 md:ml-56">{children}</main>
+          </div>
+        </Web3Providers>
       </body>
     </html>
   );

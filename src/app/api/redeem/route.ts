@@ -2,9 +2,16 @@
 import { Wallet } from "ethers";
 
 const CLOB_API = process.env.CLOB_API_URL || "https://clob.polymarket.com";
+const DEFAULT_EOA = process.env.TRADING_ADDRESS || "0x33f2c6D0ADe8f914E31E4092A34b629b17294Fc0";
 
-export async function GET() {
+function resolveAddress(req: Request): string {
+  const queryAddr = new URL(req.url).searchParams.get("address");
+  return queryAddr && /^0x[a-fA-F0-9]{40}$/.test(queryAddr) ? queryAddr : DEFAULT_EOA;
+}
+
+export async function GET(req: Request) {
   // List redeemable positions
+  const eoa = resolveAddress(req);
   try {
     const https = await import("node:https");
     const dns = await import("node:dns");
@@ -12,8 +19,8 @@ export async function GET() {
 
     const data = await new Promise<string>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("timeout")), 15000);
-      const req = https.get(
-        `https://data-api.polymarket.com/positions?user=0x33f2c6D0ADe8f914E31E4092A34b629b17294Fc0&sizeThreshold=0`,
+      const req2 = https.get(
+        `https://data-api.polymarket.com/positions?user=${eoa}&sizeThreshold=0`,
         { family: 4 },
         (res) => {
           let d = "";
@@ -21,7 +28,7 @@ export async function GET() {
           res.on("end", () => { clearTimeout(timer); resolve(d); });
         }
       );
-      req.on("error", (e: Error) => { clearTimeout(timer); reject(e); });
+      req2.on("error", (e: Error) => { clearTimeout(timer); reject(e); });
     });
 
     const all = JSON.parse(data) as Array<{
@@ -85,6 +92,8 @@ export async function POST(req: Request) {
   const pk = process.env.PRIVATE_KEY;
   if (!pk) return Response.json({ error: "No PRIVATE_KEY" }, { status: 400 });
 
+  // Server-side redeem always targets the wallet derived from PRIVATE_KEY.
+  // Client-side signing (via useRedeem hook) is used for any other wallet.
   let targetConditionId: string | undefined;
   try {
     const body = await req.json().catch(() => null);
@@ -118,8 +127,8 @@ export async function POST(req: Request) {
 
     const data = await new Promise<string>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("timeout")), 15000);
-      const req = https.get(
-        `https://data-api.polymarket.com/positions?user=0x33f2c6D0ADe8f914E31E4092A34b629b17294Fc0&sizeThreshold=0`,
+      const req2 = https.get(
+        `https://data-api.polymarket.com/positions?user=${wallet.address}&sizeThreshold=0`,
         { family: 4 },
         (res) => {
           let d = "";
@@ -127,7 +136,7 @@ export async function POST(req: Request) {
           res.on("end", () => { clearTimeout(timer); resolve(d); });
         }
       );
-      req.on("error", (e: Error) => { clearTimeout(timer); reject(e); });
+      req2.on("error", (e: Error) => { clearTimeout(timer); reject(e); });
     });
 
     const all = JSON.parse(data) as Array<{ redeemable: boolean; conditionId: string; title: string; size: number }>;

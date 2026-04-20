@@ -8,6 +8,8 @@ import {
 } from "lucide-react";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { formatDistanceToNowStrict, format, differenceInHours } from "date-fns";
+import { useAccount } from "wagmi";
+import { useRedeem } from "@/lib/web3/useRedeem";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -487,12 +489,37 @@ function PositionRow({ pos, isExpanded, isOdd, onToggle, onRefresh }: {
   const isWinner = pos.curPrice >= 0.99;
   const [action, setAction] = useState<{ status: "idle" | "submitting" | "success" | "error"; msg?: string }>({ status: "idle" });
 
+  const { isConnected } = useAccount();
+  const { redeem: walletRedeem } = useRedeem();
+
   const handleRedeem = async (e: React.MouseEvent) => {
     e.stopPropagation();
     const label = isWinner ? `Redeem ${pos.outcome} on "${pos.title}"?\n\nThis will claim ~$${pos.currentValue.toFixed(2)} via an on-chain transaction.` : `Clear losing position "${pos.title}"?\n\nThis submits an on-chain redeem (no payout — just removes from your positions list).`;
     if (!window.confirm(label)) return;
     setAction({ status: "submitting" });
+
     try {
+      // Path 1: Wallet connected → client-side signing via wagmi
+      if (isConnected) {
+        const amountAtoms = BigInt(Math.floor(pos.size * 1_000_000));
+        const hash = await walletRedeem({
+          conditionId: pos.conditionId as `0x${string}`,
+          negativeRisk: pos.negativeRisk,
+          outcomeIndex: pos.outcomeIndex,
+          amountAtoms,
+        });
+        if (!hash) {
+          setAction({ status: "error", msg: "Wallet rejected or tx failed" });
+          setTimeout(() => setAction({ status: "idle" }), 8000);
+          return;
+        }
+        setAction({ status: "success", msg: `TX: ${hash.slice(0, 12)}...` });
+        onRefresh();
+        setTimeout(() => setAction({ status: "idle" }), 5000);
+        return;
+      }
+
+      // Path 2: No wallet → server-side signing with PRIVATE_KEY
       const endpoint = pos.negativeRisk ? "/api/redeem-negrisk" : "/api/redeem";
       const res = await fetch(endpoint, {
         method: "POST",
@@ -505,7 +532,7 @@ function PositionRow({ pos, isExpanded, isOdd, onToggle, onRefresh }: {
         setTimeout(() => setAction({ status: "idle" }), 8000);
         return;
       }
-      setAction({ status: "success", msg: body.results?.[0] || "Redeemed" });
+      setAction({ status: "success", msg: body.results?.[0] || "Redeemed (server)" });
       onRefresh();
       setTimeout(() => setAction({ status: "idle" }), 5000);
     } catch (err) {
