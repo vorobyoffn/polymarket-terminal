@@ -6,7 +6,7 @@ import { useState, useEffect, useCallback } from "react";
 import {
   LayoutDashboard, TrendingUp, Wallet, Copy, Bot, BarChart3,
   Settings, Activity, CloudRain, Bitcoin, RefreshCw, Layers,
-  Menu, X, AlertTriangle,
+  Menu, X, AlertTriangle, Gauge,
 } from "lucide-react";
 import { useStore } from "@/lib/store";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
@@ -18,6 +18,7 @@ const navItems = [
   { href: "/wallets",    label: "Wallet Analysis", icon: Wallet },
   { href: "/copy-trade", label: "Copy Trading",    icon: Copy },
   { href: "/weather",    label: "Weather Arb",     icon: CloudRain },
+  { href: "/edges",      label: "Edges",           icon: Gauge },
   { href: "/btc",        label: "BTC Arb",         icon: Bitcoin },
   { href: "/strategies", label: "Strategies",      icon: Layers },
   { href: "/bots",       label: "Custom Bots",     icon: Bot },
