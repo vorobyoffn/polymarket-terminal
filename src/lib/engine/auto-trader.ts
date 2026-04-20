@@ -55,7 +55,7 @@ export interface TradeRecord {
   exitPrice?: number;
   pnl?: number;
   expiryDate?: string;
-  exitReason?: "edge_flip" | "forecast_diverged";
+  exitReason?: "edge_flip" | "forecast_diverged" | "manual";
 }
 
 export interface AutoTraderState {
@@ -531,18 +531,56 @@ async function executeLiveTrade(signal: BtcSignal): Promise<TradeRecord | null> 
   }
 }
 
+// Extended trigger type that supports manual exits too.
+type SellTrigger = Omit<import("./exit-checker").ExitTrigger, "reason"> & {
+  reason: "edge_flip" | "forecast_diverged" | "manual";
+};
+
+// Public wrapper for manual sells (from /api/close-position UI).
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function executeManualSell(args: {
+  tokenId: string;
+  conditionId: string;
+  outcomeIndex: number;
+  size: number;
+  title: string;
+  negRisk: boolean;
+  currentPrice: number;
+  entryPrice: number;
+}): Promise<{ ok: boolean; orderId?: string; error?: string; price?: number }> {
+  try {
+    const trigger: SellTrigger = {
+      ...args,
+      reason: "manual",
+      currentEdge: 0,
+      currentProb: 0,
+    };
+    const res = await executeExitSellInternal(trigger);
+    return res;
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 // Exit an existing position by placing a SELL order on CLOB.
 // Called from the scan loop when detectExits() returns triggers.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function executeExitSell(trigger: import("./exit-checker").ExitTrigger): Promise<boolean> {
+  const res = await executeExitSellInternal(trigger as SellTrigger);
+  return res.ok;
+}
+
+// Shared internal implementation used by both automatic and manual exits.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function executeExitSellInternal(trigger: SellTrigger): Promise<{ ok: boolean; orderId?: string; error?: string; price?: number }> {
   try {
     const authedClient = await getAuthenticatedClobClient();
 
     // Best bid = what someone will pay us. Take the aggressive floor so it fills.
     const bestBid = await getOrderbookBestPrice(trigger.tokenId, "sell");
     if (!bestBid || bestBid < 0.01) {
-      console.log(`[AutoExit] ❌ No bid liquidity for "${trigger.title.slice(0, 50)}" (bestBid=${bestBid})`);
-      return false;
+      console.log(`[Sell] ❌ No bid liquidity for "${trigger.title.slice(0, 50)}" (bestBid=${bestBid})`);
+      return { ok: false, error: "no bid liquidity on orderbook" };
     }
 
     const tickSize = "0.01"; // default for weather markets
@@ -550,7 +588,7 @@ async function executeExitSell(trigger: import("./exit-checker").ExitTrigger): P
     // Price: best bid rounded DOWN to tick (ensures fill at or above this)
     const price = Math.floor(bestBid / tick) * tick;
 
-    console.log(`[AutoExit] Placing SELL ${trigger.tokenId.slice(0, 12)}... @ ${price} size=${trigger.size.toFixed(2)} reason=${trigger.reason}`);
+    console.log(`[Sell] Placing SELL ${trigger.tokenId.slice(0, 12)}... @ ${price} size=${trigger.size.toFixed(2)} reason=${trigger.reason}`);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const order = await (authedClient as any).createAndPostOrder(
@@ -565,7 +603,7 @@ async function executeExitSell(trigger: import("./exit-checker").ExitTrigger): P
     );
 
     const orderResponseStr = JSON.stringify(order).slice(0, 400);
-    console.log(`[AutoExit] SELL response:`, orderResponseStr);
+    console.log(`[Sell] SELL response:`, orderResponseStr);
 
     const orderStatus = order?.status || order?.orderStatus || "unknown";
     const orderId = order?.orderID || order?.id || order?.order_id || "";
@@ -577,8 +615,8 @@ async function executeExitSell(trigger: import("./exit-checker").ExitTrigger): P
         market: `EXIT: ${trigger.title.slice(0, 60)}`,
         response: orderResponseStr,
       };
-      console.error(`[AutoExit] ❌ CLOB rejected SELL on "${trigger.title.slice(0, 50)}": ${reason}`);
-      return false;
+      console.error(`[Sell] ❌ CLOB rejected SELL on "${trigger.title.slice(0, 50)}": ${reason}`);
+      return { ok: false, error: reason, price };
     }
 
     // Record the sell as a TradeRecord for auditability (not counted in daily cap —
@@ -602,12 +640,12 @@ async function executeExitSell(trigger: import("./exit-checker").ExitTrigger): P
       exitReason: trigger.reason,
     });
 
-    console.log(`[AutoExit] ✅ SELL order placed: ${orderId} status=${orderStatus} reason=${trigger.reason} on "${trigger.title.slice(0, 50)}"`);
-    return true;
+    console.log(`[Sell] ✅ SELL order placed: ${orderId} status=${orderStatus} reason=${trigger.reason} on "${trigger.title.slice(0, 50)}"`);
+    return { ok: true, orderId, price };
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    console.error(`[AutoExit] ❌ SELL FAILED for "${trigger.title.slice(0, 50)}": ${errMsg}`);
-    return false;
+    console.error(`[Sell] ❌ SELL FAILED for "${trigger.title.slice(0, 50)}": ${errMsg}`);
+    return { ok: false, error: errMsg };
   }
 }
 

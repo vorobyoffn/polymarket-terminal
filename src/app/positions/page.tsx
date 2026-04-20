@@ -492,6 +492,44 @@ function PositionRow({ pos, isExpanded, isOdd, onToggle, onRefresh }: {
   const { isConnected } = useAccount();
   const { redeem: walletRedeem } = useRedeem();
 
+  const isLive = !isResolved && pos.curPrice > 0.01 && pos.curPrice < 0.99;
+
+  const handleSell = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const gain = pos.cashPnl;
+    const label = `SELL ${pos.outcome} @ market (~${(pos.curPrice * 100).toFixed(1)}¢) for "${pos.title}"?\n\nCurrent value: $${pos.currentValue.toFixed(2)}\nP&L so far: ${gain >= 0 ? "+" : ""}$${gain.toFixed(2)}\n\nThis places a SELL order on CLOB at the best available bid.`;
+    if (!window.confirm(label)) return;
+    setAction({ status: "submitting" });
+    try {
+      const res = await fetch("/api/close-position", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tokenId: pos.tokenId,
+          conditionId: pos.conditionId,
+          outcomeIndex: pos.outcomeIndex,
+          size: pos.size,
+          title: pos.title,
+          negRisk: pos.negativeRisk,
+          currentPrice: pos.curPrice,
+          entryPrice: pos.avgPrice,
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setAction({ status: "error", msg: body.detail || body.error || `HTTP ${res.status}` });
+        setTimeout(() => setAction({ status: "idle" }), 10000);
+        return;
+      }
+      setAction({ status: "success", msg: body.message || `Sold at ${((body.price ?? 0) * 100).toFixed(1)}¢` });
+      onRefresh();
+      setTimeout(() => setAction({ status: "idle" }), 6000);
+    } catch (err) {
+      setAction({ status: "error", msg: err instanceof Error ? err.message : String(err) });
+      setTimeout(() => setAction({ status: "idle" }), 10000);
+    }
+  };
+
   const handleRedeem = async (e: React.MouseEvent) => {
     e.stopPropagation();
     const label = isWinner ? `Redeem ${pos.outcome} on "${pos.title}"?\n\nThis will claim ~$${pos.currentValue.toFixed(2)} via an on-chain transaction.` : `Clear losing position "${pos.title}"?\n\nThis submits an on-chain redeem (no payout — just removes from your positions list).`;
@@ -667,9 +705,33 @@ function PositionRow({ pos, isExpanded, isOdd, onToggle, onRefresh }: {
               </button>
             )}
 
+            {isLive && (
+              <button
+                onClick={handleSell}
+                disabled={action.status === "submitting"}
+                className={`inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                  pos.cashPnl >= 0
+                    ? "bg-accent-yellow/10 text-accent-yellow border-accent-yellow/40 hover:bg-accent-yellow/20"
+                    : "bg-accent-red/10 text-accent-red border-accent-red/40 hover:bg-accent-red/20"
+                }`}
+                title={`Sell ${pos.size.toFixed(2)} shares at best bid (~${(pos.curPrice * 100).toFixed(1)}¢)`}
+              >
+                {action.status === "submitting" ? (
+                  <>
+                    <RefreshCw className="w-2.5 h-2.5 animate-spin" /> Selling…
+                  </>
+                ) : (
+                  <>
+                    <XCircle className="w-2.5 h-2.5" />
+                    Sell {pos.outcome} ~${(pos.size * pos.curPrice).toFixed(2)}
+                  </>
+                )}
+              </button>
+            )}
+
             {action.status === "success" && (
               <span className="inline-flex items-center gap-1 text-accent-green text-[10px]">
-                <CheckCircle className="w-2.5 h-2.5" /> {action.msg?.slice(0, 80) || "Redeemed"}
+                <CheckCircle className="w-2.5 h-2.5" /> {action.msg?.slice(0, 80) || "Done"}
               </span>
             )}
             {action.status === "error" && (
