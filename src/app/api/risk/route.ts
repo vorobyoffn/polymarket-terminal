@@ -200,21 +200,46 @@ export async function GET(req: Request) {
       allocationCap: 0.50 * 562,
       lossLimit: null,
     };
+    interface RecentExit {
+      timestamp: string;
+      market: string;
+      direction: string;
+      reason: string;
+      size: number;
+      edge: number;
+      prob: number;
+    }
+    let recentExits: RecentExit[] = [];
+    let autoExit: {
+      enabled: boolean;
+      edgeThreshold: number;
+      probThreshold: number;
+    } = { enabled: false, edgeThreshold: -0.08, probThreshold: 0.05 };
+
     try {
       const self = await fetch(`${url.origin}/api/auto-trade`, { cache: "no-store" });
       if (self.ok) {
         const state = await self.json() as {
           running: boolean;
           bankroll: number;
-          trades: Array<{ timestamp: string; size: number; status: string }>;
+          trades: Array<{
+            timestamp: string; size: number; status: string; direction?: string;
+            marketQuestion?: string; exitReason?: string; theoreticalProb?: number; edge?: number;
+            shares?: number;
+          }>;
           lossLimit?: number | null;
+          autoExitEnabled?: boolean;
+          autoExitEdgeThreshold?: number;
+          autoExitProbThreshold?: number;
         };
         const now = Date.now();
         const dailySpent = (state.trades || [])
           .filter(t => new Date(t.timestamp).getTime() > now - 24 * 60 * 60 * 1000)
+          .filter(t => !t.direction || t.direction.startsWith("BUY_"))
           .reduce((s, t) => s + (t.size || 0), 0);
         const allocationUsed = (state.trades || [])
           .filter(t => t.status === "open" || t.status === "pending")
+          .filter(t => !t.direction || t.direction.startsWith("BUY_"))
           .reduce((s, t) => s + (t.size || 0), 0);
         circuitBreakers = {
           botRunning: state.running,
@@ -224,6 +249,25 @@ export async function GET(req: Request) {
           allocationCap: Math.round(state.bankroll * 0.50 * 100) / 100,
           lossLimit: state.lossLimit ?? null,
         };
+        autoExit = {
+          enabled: state.autoExitEnabled ?? false,
+          edgeThreshold: state.autoExitEdgeThreshold ?? -0.08,
+          probThreshold: state.autoExitProbThreshold ?? 0.05,
+        };
+        // Collect recent SELL trades (last 24h)
+        recentExits = (state.trades || [])
+          .filter(t => t.direction?.startsWith("SELL_"))
+          .filter(t => new Date(t.timestamp).getTime() > now - 24 * 60 * 60 * 1000)
+          .map(t => ({
+            timestamp: t.timestamp,
+            market: (t.marketQuestion || "").slice(0, 70),
+            direction: t.direction || "",
+            reason: t.exitReason || "manual",
+            size: t.size || 0,
+            edge: t.edge || 0,
+            prob: t.theoreticalProb || 0,
+          }))
+          .slice(-20); // last 20
       }
     } catch { /* silent */ }
 
@@ -252,6 +296,8 @@ export async function GET(req: Request) {
         netExposureAtRisk: Math.round(worstCase.netExposureAtRisk * 100) / 100,
       },
       circuitBreakers,
+      autoExit,
+      recentExits,
       equityCurve: snapshots.map(s => ({
         timestamp: s.timestamp,
         value: Math.round(s.totalCurrent * 100) / 100,

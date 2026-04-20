@@ -41,7 +41,7 @@ export interface TradeRecord {
   timestamp: string;
   marketId: string;
   marketQuestion: string;
-  direction: "BUY_YES" | "BUY_NO";
+  direction: "BUY_YES" | "BUY_NO" | "SELL_YES" | "SELL_NO";
   tokenId: string;
   entryPrice: number;
   size: number;       // dollar amount
@@ -55,6 +55,7 @@ export interface TradeRecord {
   exitPrice?: number;
   pnl?: number;
   expiryDate?: string;
+  exitReason?: "edge_flip" | "forecast_diverged";
 }
 
 export interface AutoTraderState {
@@ -75,6 +76,9 @@ export interface AutoTraderState {
   error: string | null;
   lastOrderError: { timestamp: string; market: string; response: string } | null;
   lossLimit: number | null; // halt bot if totalPnl drops below -lossLimit
+  autoExitEnabled: boolean;
+  autoExitEdgeThreshold: number;   // negative value, e.g., -0.08
+  autoExitProbThreshold: number;   // e.g., 0.05
 }
 
 interface MarketTokenInfo {
@@ -103,7 +107,14 @@ let state: AutoTraderState = {
   error: null,
   lastOrderError: null,
   lossLimit: null,
+  autoExitEnabled: process.env.ENABLE_AUTO_EXIT === "true",
+  autoExitEdgeThreshold: parseFloat(process.env.AUTO_EXIT_EDGE_THRESHOLD || "-0.08"),
+  autoExitProbThreshold: parseFloat(process.env.AUTO_EXIT_PROB_THRESHOLD || "0.05"),
 };
+
+// Rate-limiting state for auto-exit (not part of persisted state)
+const recentExitTimestamps = new Map<string, number>();
+const positionFirstSeen = new Map<string, number>();
 
 let scanTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -520,6 +531,86 @@ async function executeLiveTrade(signal: BtcSignal): Promise<TradeRecord | null> 
   }
 }
 
+// Exit an existing position by placing a SELL order on CLOB.
+// Called from the scan loop when detectExits() returns triggers.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function executeExitSell(trigger: import("./exit-checker").ExitTrigger): Promise<boolean> {
+  try {
+    const authedClient = await getAuthenticatedClobClient();
+
+    // Best bid = what someone will pay us. Take the aggressive floor so it fills.
+    const bestBid = await getOrderbookBestPrice(trigger.tokenId, "sell");
+    if (!bestBid || bestBid < 0.01) {
+      console.log(`[AutoExit] ❌ No bid liquidity for "${trigger.title.slice(0, 50)}" (bestBid=${bestBid})`);
+      return false;
+    }
+
+    const tickSize = "0.01"; // default for weather markets
+    const tick = parseFloat(tickSize);
+    // Price: best bid rounded DOWN to tick (ensures fill at or above this)
+    const price = Math.floor(bestBid / tick) * tick;
+
+    console.log(`[AutoExit] Placing SELL ${trigger.tokenId.slice(0, 12)}... @ ${price} size=${trigger.size.toFixed(2)} reason=${trigger.reason}`);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const order = await (authedClient as any).createAndPostOrder(
+      {
+        tokenID: trigger.tokenId,
+        price,
+        side: "SELL",
+        size: trigger.size,
+      },
+      { tickSize, negRisk: trigger.negRisk },
+      "GTC"
+    );
+
+    const orderResponseStr = JSON.stringify(order).slice(0, 400);
+    console.log(`[AutoExit] SELL response:`, orderResponseStr);
+
+    const orderStatus = order?.status || order?.orderStatus || "unknown";
+    const orderId = order?.orderID || order?.id || order?.order_id || "";
+
+    if (!orderId) {
+      const reason = order?.errorMsg || order?.error || order?.message || orderStatus || "no orderId returned";
+      state.lastOrderError = {
+        timestamp: new Date().toISOString(),
+        market: `EXIT: ${trigger.title.slice(0, 60)}`,
+        response: orderResponseStr,
+      };
+      console.error(`[AutoExit] ❌ CLOB rejected SELL on "${trigger.title.slice(0, 50)}": ${reason}`);
+      return false;
+    }
+
+    // Record the sell as a TradeRecord for auditability (not counted in daily cap —
+    // it's an exit, not a new entry).
+    state.trades.push({
+      id: genId(),
+      timestamp: new Date().toISOString(),
+      marketId: trigger.conditionId,
+      marketQuestion: trigger.title,
+      direction: trigger.outcomeIndex === 0 ? "SELL_YES" : "SELL_NO",
+      tokenId: trigger.tokenId,
+      entryPrice: Math.round(price * 1000) / 1000,
+      size: Math.round(price * trigger.size * 100) / 100,
+      shares: trigger.size,
+      theoreticalProb: Math.round(trigger.currentProb * 1000) / 1000,
+      edge: Math.round(trigger.currentEdge * 1000) / 1000,
+      lor: 0,
+      status: orderStatus === "matched" || orderStatus === "live" ? "open" : "pending",
+      mode: "live",
+      orderId,
+      exitReason: trigger.reason,
+    });
+
+    console.log(`[AutoExit] ✅ SELL order placed: ${orderId} status=${orderStatus} reason=${trigger.reason} on "${trigger.title.slice(0, 50)}"`);
+    return true;
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error(`[AutoExit] ❌ SELL FAILED for "${trigger.title.slice(0, 50)}": ${errMsg}`);
+    return false;
+  }
+}
+
 // ── Core Scan Loop ───────────────────────────────────────────────────────────
 
 // Convert expiry signal to BtcSignal-like format for unified execution
@@ -633,8 +724,10 @@ async function scanAndTrade() {
 
     // ── Strategy 1: Weather Arbitrage (highest priority — daily resolution) ──
     let weatherSignals: BtcSignal[] = [];
+    let rawWeatherSignals: WeatherSignal[] = [];
     try {
       const weatherResult = await runWeatherArbScan();
+      rawWeatherSignals = weatherResult.signals;
       weatherSignals = weatherResult.signals
         .filter((s: WeatherSignal) => s.edge >= 0.10 && s.confidence >= 0.70)
         .filter((s: WeatherSignal) => !tradedMarkets.has(s.marketId))
@@ -663,6 +756,39 @@ async function scanAndTrade() {
       console.log(`[AutoTrader] Weather scan: ${weatherResult.signals.length} signals, ${weatherSignals.length} qualifying`);
     } catch (e) {
       console.error("[AutoTrader] Weather scan error:", e instanceof Error ? e.message : e);
+    }
+
+    // ── Auto-exit check (model edge flipped or forecast diverged) ──
+    if (state.autoExitEnabled && rawWeatherSignals.length > 0) {
+      try {
+        const { detectExits } = await import("./exit-checker");
+        const walletAddress = process.env.TRADING_ADDRESS || "0x33f2c6D0ADe8f914E31E4092A34b629b17294Fc0";
+        const triggers = await detectExits({
+          address: walletAddress,
+          currentWeatherSignals: rawWeatherSignals,
+          edgeThreshold: state.autoExitEdgeThreshold,
+          probThreshold: state.autoExitProbThreshold,
+          recentExitTimestamps,
+          cooldownMinutes: 10,
+          minAgePositionsBeforeExit: 30,
+          positionFirstSeen,
+        });
+        if (triggers.length > 0) {
+          console.log(`[AutoExit] 🔍 ${triggers.length} exit trigger(s) found`);
+        }
+        for (const trigger of triggers) {
+          console.log(`[AutoExit] ⚠ ${trigger.reason} on "${trigger.title.slice(0, 50)}" — edge=${trigger.currentEdge.toFixed(3)} prob=${trigger.currentProb.toFixed(3)}`);
+          const ok = await executeExitSell(trigger);
+          if (ok) {
+            recentExitTimestamps.set(trigger.conditionId, Date.now());
+          } else {
+            // Still mark cooldown to avoid retry loops on persistent failures
+            recentExitTimestamps.set(trigger.conditionId, Date.now());
+          }
+        }
+      } catch (e) {
+        console.error("[AutoExit] check failed:", e instanceof Error ? e.message : e);
+      }
     }
 
     await delay(3000); // 3s pause between strategies
@@ -888,6 +1014,21 @@ export function setLossLimit(lossLimit: number | null) {
   console.log(`[AutoTrader] Loss limit set to ${lossLimit === null ? "disabled" : "$" + Math.abs(lossLimit)}`);
 }
 
+export function setAutoExit(params: {
+  enabled?: boolean;
+  edgeThreshold?: number;
+  probThreshold?: number;
+}) {
+  if (typeof params.enabled === "boolean") state.autoExitEnabled = params.enabled;
+  if (typeof params.edgeThreshold === "number" && Number.isFinite(params.edgeThreshold)) {
+    state.autoExitEdgeThreshold = params.edgeThreshold;
+  }
+  if (typeof params.probThreshold === "number" && Number.isFinite(params.probThreshold)) {
+    state.autoExitProbThreshold = params.probThreshold;
+  }
+  console.log(`[AutoTrader] Auto-exit: enabled=${state.autoExitEnabled} edge=${state.autoExitEdgeThreshold} prob=${state.autoExitProbThreshold}`);
+}
+
 export function resetTrader() {
   stopTrader();
   state.trades = [];
@@ -1041,14 +1182,17 @@ async function autoRedeemPositions() {
 // ── Auto-resolve: check if markets have resolved ────────────────────────────
 
 async function autoResolveTrades() {
-  const openTrades = state.trades.filter(t => t.status === "open");
+  const openTrades = state.trades.filter(t =>
+    t.status === "open" && (t.direction === "BUY_YES" || t.direction === "BUY_NO")
+  );
   if (openTrades.length === 0) return;
 
   for (const trade of openTrades) {
     try {
       // Check if market has resolved by fetching current price
       // Price of 0 or 1 (within tolerance) means resolved
-      const tokenInfo = await getMarketTokenInfo(trade.marketId, trade.direction);
+      const direction = trade.direction as "BUY_YES" | "BUY_NO"; // narrowed by filter
+      const tokenInfo = await getMarketTokenInfo(trade.marketId, direction);
       if (!tokenInfo) continue;
 
       const price = await getOrderbookBestPrice(tokenInfo.tokenId, "buy");

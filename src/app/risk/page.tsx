@@ -40,6 +40,20 @@ interface RiskData {
     allocationCap: number;
     lossLimit: number | null;
   };
+  autoExit?: {
+    enabled: boolean;
+    edgeThreshold: number;
+    probThreshold: number;
+  };
+  recentExits?: Array<{
+    timestamp: string;
+    market: string;
+    direction: string;
+    reason: string;
+    size: number;
+    edge: number;
+    prob: number;
+  }>;
   equityCurve: Array<{ timestamp: string; value: number; pnl: number }>;
 }
 
@@ -93,6 +107,15 @@ export default function RiskPage() {
     });
     setSavingLimit(false);
     setLossLimitInput("");
+    refresh(true);
+  };
+
+  const handleToggleAutoExit = async (enabled: boolean) => {
+    await fetch("/api/auto-trade", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "set_auto_exit", enabled }),
+    });
     refresh(true);
   };
 
@@ -189,6 +212,70 @@ export default function RiskPage() {
               <div className="text-xs text-accent-yellow">
                 <div className="font-semibold mb-1">Concentration warnings:</div>
                 {exposure.concentrationWarnings.map((w, i) => <div key={i}>• {w}</div>)}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ── AUTO-EXIT (beta) ── */}
+        <div className="px-6 py-4 border-b border-border bg-bg-tertiary/20">
+          <div className="flex items-center justify-between mb-3">
+            <div className="text-text-muted text-[10px] uppercase tracking-widest flex items-center gap-2">
+              <AlertTriangle className="w-3 h-3" />
+              Auto-Exit (cut losses)
+              <span className="text-[9px] text-accent-yellow normal-case">BETA</span>
+            </div>
+            {data.autoExit && (
+              <button
+                onClick={() => handleToggleAutoExit(!data.autoExit!.enabled)}
+                className={`px-3 py-1 text-[10px] font-bold uppercase tracking-wider rounded border ${
+                  data.autoExit.enabled
+                    ? "bg-accent-green/10 border-accent-green/40 text-accent-green"
+                    : "bg-text-muted/10 border-text-muted/40 text-text-muted hover:text-text-primary"
+                }`}
+              >
+                {data.autoExit.enabled ? "● Enabled" : "○ Disabled"}
+              </button>
+            )}
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+            <div>
+              <div className="text-text-muted text-[10px] uppercase mb-1">Edge flip threshold</div>
+              <div className="font-mono text-text-primary tnum">
+                {data.autoExit ? `${(data.autoExit.edgeThreshold * 100).toFixed(1)}%` : "—"}
+              </div>
+              <div className="text-[9px] text-text-muted mt-0.5">Sell if our-side edge drops below this</div>
+            </div>
+            <div>
+              <div className="text-text-muted text-[10px] uppercase mb-1">Prob divergence threshold</div>
+              <div className="font-mono text-text-primary tnum">
+                {data.autoExit ? `${(data.autoExit.probThreshold * 100).toFixed(1)}%` : "—"}
+              </div>
+              <div className="text-[9px] text-text-muted mt-0.5">Sell if our outcome probability drops below this</div>
+            </div>
+            <div>
+              <div className="text-text-muted text-[10px] uppercase mb-1">Recent exits (24h)</div>
+              <div className="font-mono text-text-primary tnum">{data.recentExits?.length ?? 0}</div>
+              <div className="text-[9px] text-text-muted mt-0.5">
+                {data.autoExit?.enabled ? "Scanning every 60s" : "Scanner inactive"}
+              </div>
+            </div>
+          </div>
+          {data.recentExits && data.recentExits.length > 0 && (
+            <div className="mt-3 border-t border-border pt-3">
+              <div className="text-text-muted text-[9px] uppercase mb-2">Recent auto-exits</div>
+              <div className="space-y-1">
+                {data.recentExits.slice().reverse().slice(0, 8).map((e, i) => (
+                  <div key={i} className="text-[10px] grid grid-cols-[80px_1fr_80px_60px_60px] gap-2 items-center">
+                    <span className="text-text-muted font-mono">{e.timestamp.slice(11, 19)}</span>
+                    <span className="text-text-primary truncate">{e.market}</span>
+                    <span className={`font-bold ${e.reason === "edge_flip" ? "text-accent-yellow" : "text-accent-red"}`}>
+                      {e.reason.replace("_", " ")}
+                    </span>
+                    <span className="text-right font-mono text-text-primary tnum">${e.size.toFixed(2)}</span>
+                    <span className="text-right font-mono text-text-muted tnum">{e.direction}</span>
+                  </div>
+                ))}
               </div>
             </div>
           )}
