@@ -193,6 +193,60 @@ export async function getOrderbookTop(tokenId: string): Promise<{
   }
 }
 
+// ── On-chain exposure — source of truth for caps ───────────────────────────
+// state.trades is in-memory and resets on Fast Refresh, so can't be trusted
+// for allocation/concurrent caps. We fetch the wallet's positions from the
+// data-api at scan start and use that to enforce caps. Cached for 30s to
+// avoid hammering.
+let cachedOnChain: {
+  allocated: number;         // sum of initialValue (cost basis)
+  currentValue: number;      // mark-to-market
+  openCount: number;         // open positions (excludes resolved / $0)
+  timestamp: number;
+} | null = null;
+const ONCHAIN_CACHE_TTL_MS = 30_000;
+
+async function fetchOnChainExposure(address: string): Promise<typeof cachedOnChain> {
+  if (cachedOnChain && Date.now() - cachedOnChain.timestamp < ONCHAIN_CACHE_TTL_MS) {
+    return cachedOnChain;
+  }
+  try {
+    const https = await import("node:https");
+    const dns = await import("node:dns");
+    dns.setDefaultResultOrder("ipv4first");
+
+    const data = await new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("timeout")), 10000);
+      const r = https.get(
+        `https://data-api.polymarket.com/positions?user=${address}&sizeThreshold=0`,
+        { family: 4 },
+        (res) => {
+          let d = "";
+          res.on("data", (c: Buffer) => { d += c.toString(); });
+          res.on("end", () => { clearTimeout(timer); resolve(d); });
+        }
+      );
+      r.on("error", (e: Error) => { clearTimeout(timer); reject(e); });
+    });
+
+    const all = JSON.parse(data) as Array<{
+      currentValue: number; initialValue: number; curPrice: number;
+    }>;
+    const open = all.filter(p => p.currentValue > 0.5 && p.curPrice > 0.01 && p.curPrice < 0.99);
+    cachedOnChain = {
+      allocated: open.reduce((s, p) => s + (p.initialValue || 0), 0),
+      currentValue: open.reduce((s, p) => s + (p.currentValue || 0), 0),
+      openCount: open.length,
+      timestamp: Date.now(),
+    };
+    return cachedOnChain;
+  } catch (err) {
+    console.error("[OnChain] Exposure fetch failed:", err instanceof Error ? err.message : err);
+    // Fall back to stale cache or zero
+    return cachedOnChain || { allocated: 0, currentValue: 0, openCount: 0, timestamp: Date.now() };
+  }
+}
+
 function updateStats() {
   const closed = state.trades.filter((t) => t.status === "won" || t.status === "lost");
   state.totalPnl = closed.reduce((s, t) => s + (t.pnl || 0), 0);
@@ -773,8 +827,16 @@ async function scanAndTrade() {
     }
 
     const openTrades = state.trades.filter((t) => t.status === "open" || t.status === "pending");
-    const slotsAvailable = state.maxConcurrentTrades - openTrades.length;
-    if (slotsAvailable <= 0) return;
+    // Concurrent slots: count state-tracked AND on-chain open positions; use whichever is larger.
+    // Prevents over-opening when state.trades gets wiped by Fast Refresh but wallet still holds positions.
+    const walletAddrForSlots = process.env.TRADING_ADDRESS || "0x33f2c6D0ADe8f914E31E4092A34b629b17294Fc0";
+    const onChainForSlots = await fetchOnChainExposure(walletAddrForSlots);
+    const effectiveOpenCount = Math.max(openTrades.length, onChainForSlots?.openCount || 0);
+    const slotsAvailable = state.maxConcurrentTrades - effectiveOpenCount;
+    if (slotsAvailable <= 0) {
+      console.log(`[AutoTrader] No slots (state=${openTrades.length}, onChain=${onChainForSlots?.openCount}, max=${state.maxConcurrentTrades})`);
+      return;
+    }
     const tradedMarkets = new Set(openTrades.map((t) => t.marketId));
 
     // Record price snapshot for historical data
@@ -995,9 +1057,20 @@ async function scanAndTrade() {
     scored.sort((a, b) => b._score - a._score);
 
     // ── POSITION LIMITS ──
+    // Cap enforcement uses MAX(state.trades, on-chain positions) so Fast Refresh
+    // can't silently reset the budget. On-chain is the real source of truth.
     let executed = 0;
     const openTrades2 = state.trades.filter(t => t.status === "open" || t.status === "pending");
-    const totalAllocated = openTrades2.reduce((s, t) => s + t.size, 0);
+    const stateAllocated = openTrades2.reduce((s, t) => s + t.size, 0);
+
+    const walletAddress = process.env.TRADING_ADDRESS || "0x33f2c6D0ADe8f914E31E4092A34b629b17294Fc0";
+    const onChain = await fetchOnChainExposure(walletAddress);
+    const onChainAllocated = onChain?.allocated || 0;
+    const totalAllocated = Math.max(stateAllocated, onChainAllocated);
+    if (onChainAllocated > stateAllocated) {
+      console.log(`[AutoTrader] Using on-chain allocation $${onChainAllocated.toFixed(0)} (state shows $${stateAllocated.toFixed(0)})`);
+    }
+
     // Rolling 24-hour window — trades age out continuously instead of a calendar-day reset
     const twentyFourHoursAgo = Date.now() - 24 * 60 * 60 * 1000;
     const dailySpent = state.trades
@@ -1008,9 +1081,9 @@ async function scanAndTrade() {
       if (executed >= slotsAvailable) break;
       if (tradedMarkets.has(signal.marketId)) continue;
 
-      // Max 50% of bankroll allocated at any time
+      // Max 50% of bankroll allocated at any time (on-chain aware)
       if (totalAllocated + (signal.recommendedBet || 0) > state.bankroll * 0.50) {
-        console.log(`[AutoTrader] Portfolio limit reached: $${totalAllocated.toFixed(0)} allocated`);
+        console.log(`[AutoTrader] Portfolio limit reached: $${totalAllocated.toFixed(0)} allocated (on-chain: $${onChainAllocated.toFixed(0)})`);
         break;
       }
 
