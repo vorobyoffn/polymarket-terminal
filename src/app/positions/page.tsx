@@ -140,6 +140,7 @@ function pnlColor(pnl: number): string {
 export default function PositionsPage() {
   const [liveData, setLiveData] = useState<LiveData | null>(null);
   const [paperState, setPaperState] = useState<AutoTraderState | null>(null);
+  const [walletUsdc, setWalletUsdc] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<TabKey>("live");
@@ -148,6 +149,7 @@ export default function PositionsPage() {
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [searchQuery, setSearchQuery] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [bulkStatus, setBulkStatus] = useState<{ running: boolean; done: number; total: number; log: string[] }>({ running: false, done: 0, total: 0, log: [] });
   const searchRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -155,18 +157,24 @@ export default function PositionsPage() {
     setTimeout(() => {
       fetch("/api/live-positions").then(r => r.ok ? r.json() : null).then(d => { if (d) setLiveData(d as LiveData); });
       fetch("/api/auto-trade").then(r => r.ok ? r.json() : null).then(d => { if (d) setPaperState(d as AutoTraderState); });
+      fetch("/api/wallet-balance").then(r => r.ok ? r.json() : null).then((d: { totalUsdc?: number } | null) => { if (d && typeof d.totalUsdc === "number") setWalletUsdc(d.totalUsdc); });
     }, 300);
   }, []);
 
   const refresh = useCallback(async (showLoading = false) => {
     if (showLoading) setLoading(true);
     try {
-      const [liveRes, traderRes] = await Promise.all([
+      const [liveRes, traderRes, walletRes] = await Promise.all([
         fetch("/api/live-positions"),
         fetch("/api/auto-trade"),
+        fetch("/api/wallet-balance"),
       ]);
       if (liveRes.ok) setLiveData(await liveRes.json() as LiveData);
       if (traderRes.ok) setPaperState(await traderRes.json() as AutoTraderState);
+      if (walletRes.ok) {
+        const w = await walletRes.json() as { totalUsdc?: number };
+        if (typeof w.totalUsdc === "number") setWalletUsdc(w.totalUsdc);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -178,6 +186,58 @@ export default function PositionsPage() {
     const id = setInterval(() => refresh(false), 10000);
     return () => clearInterval(id);
   }, [refresh]);
+
+  const closeAllNonWeather = useCallback(async () => {
+    // Must confirm with full list first — user authorizes the batch
+    const positions = liveData?.positions || [];
+    const nonWeather = positions.filter(p =>
+      !p.title.toLowerCase().includes("temperature") &&
+      p.curPrice > 0.01 && p.curPrice < 0.99
+    );
+    if (nonWeather.length === 0) {
+      alert("No non-weather open positions to close.");
+      return;
+    }
+    const totalValue = nonWeather.reduce((s, p) => s + p.currentValue, 0);
+    const list = nonWeather.map(p => `• ${p.outcome} @ ${(p.curPrice * 100).toFixed(1)}¢ — $${p.currentValue.toFixed(2)} — ${p.title.slice(0, 55)}`).join("\n");
+    const confirmText = `Sell ALL non-weather positions at best bid?\n\nPositions: ${nonWeather.length}\nTotal value: ~$${totalValue.toFixed(2)}\n\n${list}\n\nThis will place ${nonWeather.length} SELL orders on CLOB, one per position.`;
+    if (!window.confirm(confirmText)) return;
+
+    setBulkStatus({ running: true, done: 0, total: nonWeather.length, log: [] });
+    let done = 0;
+    const log: string[] = [];
+    for (const p of nonWeather) {
+      try {
+        const res = await fetch("/api/close-position", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            tokenId: p.tokenId,
+            conditionId: p.conditionId,
+            outcomeIndex: p.outcomeIndex,
+            size: p.size,
+            title: p.title,
+            negRisk: p.negativeRisk,
+            currentPrice: p.curPrice,
+            entryPrice: p.avgPrice,
+            // No limitPrice → defaults to best bid (market sell, fast fill)
+          }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (res.ok) {
+          log.push(`✓ ${p.title.slice(0, 40)} — sold at ${((body.price ?? 0) * 100).toFixed(1)}¢`);
+        } else {
+          log.push(`✗ ${p.title.slice(0, 40)} — ${body.detail || body.error || "failed"}`);
+        }
+      } catch (e) {
+        log.push(`✗ ${p.title.slice(0, 40)} — ${e instanceof Error ? e.message : "error"}`);
+      }
+      done++;
+      setBulkStatus({ running: true, done, total: nonWeather.length, log: [...log] });
+    }
+    setBulkStatus({ running: false, done, total: nonWeather.length, log });
+    refresh(true);
+  }, [liveData, refresh]);
 
   const closeTrade = useCallback(async (tradeId: string, outcome: "won" | "lost") => {
     await fetch("/api/auto-trade", {
@@ -239,32 +299,61 @@ export default function PositionsPage() {
         title="Portfolio"
         subtitle="Live positions with real-time P&L from Polymarket"
         actions={
-          <button onClick={() => refresh(true)} disabled={loading}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-accent-cyan/10 border border-accent-cyan/30 text-accent-cyan text-xs rounded hover:bg-accent-cyan/20 transition-colors disabled:opacity-40"
-          >
-            {loading ? <RefreshCw className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-            Refresh
-          </button>
+          <div className="flex items-center gap-2">
+            <button onClick={closeAllNonWeather} disabled={bulkStatus.running || loading}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-accent-red/10 border border-accent-red/30 text-accent-red text-xs rounded hover:bg-accent-red/20 transition-colors disabled:opacity-40"
+              title="Place SELL orders for all non-weather positions at best bid"
+            >
+              <XCircle className="w-3 h-3" />
+              {bulkStatus.running ? `Selling ${bulkStatus.done}/${bulkStatus.total}` : "Close Non-Weather"}
+            </button>
+            <button onClick={() => refresh(true)} disabled={loading}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-accent-cyan/10 border border-accent-cyan/30 text-accent-cyan text-xs rounded hover:bg-accent-cyan/20 transition-colors disabled:opacity-40"
+            >
+              {loading ? <RefreshCw className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+              Refresh
+            </button>
+          </div>
         }
       />
+
+      {/* Bulk sell log */}
+      {(bulkStatus.running || bulkStatus.log.length > 0) && (
+        <div className="px-6 py-2 border-b border-border bg-bg-tertiary/30">
+          <div className="text-[10px] text-text-muted uppercase mb-1">
+            Bulk close: {bulkStatus.done} of {bulkStatus.total} {bulkStatus.running ? "(in progress...)" : "(done)"}
+            {!bulkStatus.running && bulkStatus.log.length > 0 && (
+              <button onClick={() => setBulkStatus({ running: false, done: 0, total: 0, log: [] })}
+                className="ml-2 text-text-muted hover:text-text-primary">× clear</button>
+            )}
+          </div>
+          <div className="space-y-0.5 max-h-24 overflow-y-auto">
+            {bulkStatus.log.map((line, i) => (
+              <div key={i} className={`text-[10px] font-mono ${line.startsWith("✓") ? "text-accent-green" : "text-accent-red"}`}>
+                {line}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* ── P&L Summary Banner ── */}
       {stats && (
         <div className="px-6 py-4 border-b border-border bg-bg-secondary">
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4">
             <div className="col-span-2">
-              <div className="text-text-muted text-[10px] uppercase tracking-wider mb-1">Portfolio Value</div>
-              <div className="text-2xl font-mono font-bold text-text-primary tnum">${stats.totalCurrent.toFixed(2)}</div>
+              <div className="text-text-muted text-[10px] uppercase tracking-wider mb-1">Total Portfolio</div>
+              <div className="text-2xl font-mono font-bold text-text-primary tnum">${(walletUsdc + stats.totalCurrent).toFixed(2)}</div>
               <div className={`text-xs font-mono tnum ${pnlColor(stats.totalPnl)}`}>
-                {stats.totalPnl >= 0 ? "+" : ""}{stats.totalPnl.toFixed(2)} ({stats.totalPnlPct >= 0 ? "+" : ""}{stats.totalPnlPct.toFixed(1)}%)
+                {stats.totalPnl >= 0 ? "+" : ""}{stats.totalPnl.toFixed(2)} ({stats.totalPnlPct >= 0 ? "+" : ""}{stats.totalPnlPct.toFixed(1)}%) unrealized
               </div>
             </div>
-            <Stat icon={DollarSign} label="Cost Basis" value={`$${stats.totalInitial.toFixed(2)}`} color="text-text-primary" />
-            <Stat icon={Layers} label="Positions" value={stats.totalPositions} color="text-accent-cyan" />
+            <Stat icon={DollarSign} label="Cash (USDC)" value={`$${walletUsdc.toFixed(2)}`} color="text-accent-green" />
+            <Stat icon={Layers} label="Positions Value" value={`$${stats.totalCurrent.toFixed(2)}`} color="text-text-primary" />
+            <Stat icon={DollarSign} label="Cost Basis" value={`$${stats.totalInitial.toFixed(2)}`} color="text-text-muted" />
             <Stat icon={TrendingUp} label="Winners" value={stats.winners} color="text-accent-green" />
             <Stat icon={TrendingDown} label="Losers" value={stats.losers} color="text-accent-red" />
-            <Stat icon={Activity} label="Unrealized" value={`${stats.totalPnl >= 0 ? "+" : ""}$${stats.totalPnl.toFixed(2)}`} color={pnlColor(stats.totalPnl)} />
-            <Stat icon={Target} label="Realized" value={`$${stats.totalRealized.toFixed(2)}`} color="text-text-muted" />
+            <Stat icon={Activity} label="# Positions" value={stats.totalPositions} color="text-accent-cyan" />
           </div>
         </div>
       )}
