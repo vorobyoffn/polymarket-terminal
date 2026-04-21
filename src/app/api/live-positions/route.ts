@@ -65,16 +65,11 @@ export async function GET(req: Request) {
       conditionId: string; redeemable: boolean;
     }>>(`https://data-api.polymarket.com/positions?user=${eoa}&sizeThreshold=0`);
 
-    // Filter out only positions we've actually redeemed (claimed condition IDs)
-    const claimedIds = new Set([
-      "0xb907f677d1a4574261607573593f9931f0bdcb48dd014d6e4fbc25aa4051904a", // Taipei
-      "0xb8433678ecb971f94728c0579c9dd349521567678436daad1471c8f4cb5e033e", // Moscow 9C
-      "0xc044c6e20f16903b5d307c786f7900917fdad7db76db0bbf7af15d28ed07c585", // Singapore
-      "0x3b856eb1f92b453485bdbe3b9063d067bae3337d60165df145caa2daab7fc81a", // Moscow 11C
-    ]);
-    const activePositions = (rawPositions || []).filter(p =>
-      !claimedIds.has(p.conditionId) && p.currentValue > 0.01
-    );
+    // Trust on-chain state: if data API shows currentValue > 0, position is real.
+    // The previous hardcoded claimedIds list caused actually-still-redeemable
+    // positions (Taipei, Moscow 9C, Singapore 33°C+, Moscow 11C) to be hidden
+    // from the UI even though the wallet still held the tokens.
+    const activePositions = (rawPositions || []).filter(p => p.currentValue > 0.01);
 
     const positions = activePositions.map(p => ({
       tokenId: p.asset,

@@ -1196,6 +1196,7 @@ async function autoRedeemPositions() {
     const positions = JSON.parse(data) as Array<{
       conditionId: string; title: string; redeemable: boolean;
       currentValue: number; size: number; curPrice: number; negativeRisk: boolean;
+      asset: string; outcomeIndex: number;
     }>;
 
     // Find redeemable positions we haven't claimed yet
@@ -1217,37 +1218,77 @@ async function autoRedeemPositions() {
 
     const normalizedKey = pk.startsWith("0x") ? pk : `0x${pk}`;
 
+    // Shared viem setup for both paths
+    const { createWalletClient, createPublicClient, http, parseAbi } = await import("viem");
+    const { privateKeyToAccount } = await import("viem/accounts");
+    const { polygon } = await import("viem/chains");
+    const account = privateKeyToAccount(normalizedKey as `0x${string}`);
+    const rpc = process.env.POLYGON_RPC_URL || "https://polygon-bor-rpc.publicnode.com";
+    const wc = createWalletClient({ account, chain: polygon, transport: http(rpc, { timeout: 30000 }) });
+    const pc = createPublicClient({ chain: polygon, transport: http(rpc, { timeout: 30000 }) });
+
+    const CTF = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045" as const;
+    const NEG_RISK_ADAPTER = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296" as const;
+    const USDC = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174" as const;
+    const ZERO = "0x0000000000000000000000000000000000000000000000000000000000000000" as `0x${string}`;
+    const ctfAbi = parseAbi([
+      "function redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] indexSets) external",
+      "function balanceOf(address owner, uint256 id) view returns (uint256)",
+    ]);
+    const negRiskAbi = parseAbi([
+      "function redeemPositions(bytes32 conditionId, uint256[] amounts) external",
+    ]);
+
     for (const pos of toRedeem) {
       try {
         if (pos.negativeRisk) {
-          // NegRisk: try selling on CLOB at 99¢
-          console.log(`[AutoRedeem] Selling negRisk position: ${pos.title.slice(0, 40)} (\$${pos.currentValue.toFixed(2)})`);
-          // Skip for now — CLOB sell requires token ID which we don't have here
-          // Just log it so user knows
-          console.log(`[AutoRedeem] ⚠️ NegRisk position needs manual claim or CLOB sell`);
+          // NegRisk: use NegRiskAdapter.redeemPositions(conditionId, amounts)
+          // where amounts[0]=YES, amounts[1]=NO. Query on-chain balance to get exact amount.
+          let balanceAtoms: bigint;
+          try {
+            balanceAtoms = (await pc.readContract({
+              address: CTF,
+              abi: ctfAbi,
+              functionName: "balanceOf",
+              args: [account.address, BigInt(pos.asset)],
+            })) as bigint;
+          } catch {
+            balanceAtoms = BigInt(Math.floor(pos.size * 1_000_000));
+          }
+
+          if (balanceAtoms === BigInt(0)) {
+            console.log(`[AutoRedeem] Skip ${pos.title.slice(0, 40)} — zero on-chain balance (already redeemed)`);
+            claimedConditionIds.add(pos.conditionId);
+            continue;
+          }
+
+          const amounts: [bigint, bigint] = pos.outcomeIndex === 0
+            ? [balanceAtoms, BigInt(0)]
+            : [BigInt(0), balanceAtoms];
+
+          try {
+            const hash = await wc.writeContract({
+              address: NEG_RISK_ADAPTER,
+              abi: negRiskAbi,
+              functionName: "redeemPositions",
+              args: [pos.conditionId as `0x${string}`, amounts],
+            });
+            await pc.waitForTransactionReceipt({ hash });
+            claimedConditionIds.add(pos.conditionId);
+            console.log(`[AutoRedeem] ✅ NegRisk claimed: ${pos.title.slice(0, 40)} ($${pos.currentValue.toFixed(2)}) — TX: ${hash}`);
+          } catch (e) {
+            console.error(`[AutoRedeem] NegRiskAdapter failed for ${pos.title.slice(0, 40)}: ${e instanceof Error ? e.message.slice(0, 100) : String(e).slice(0, 100)}`);
+          }
         } else {
-          // Standard: use CTF redeemPositions
-          const { createWalletClient, createPublicClient, http, parseAbi } = await import("viem");
-          const { privateKeyToAccount } = await import("viem/accounts");
-          const { polygon } = await import("viem/chains");
-
-          const account = privateKeyToAccount(normalizedKey as `0x${string}`);
-          const rpc = process.env.POLYGON_RPC_URL || "https://polygon-bor-rpc.publicnode.com";
-          const wc = createWalletClient({ account, chain: polygon, transport: http(rpc, { timeout: 30000 }) });
-          const pc = createPublicClient({ chain: polygon, transport: http(rpc, { timeout: 30000 }) });
-
-          const CTF = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045" as const;
-          const USDC = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174" as const;
-          const ZERO = "0x0000000000000000000000000000000000000000000000000000000000000000" as `0x${string}`;
-          const ctfAbi = parseAbi(["function redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] indexSets) external"]);
-
+          // Standard CTF redeem — index set = 1 << outcomeIndex (1 for YES, 2 for NO)
+          const indexSet = BigInt(1) << BigInt(pos.outcomeIndex);
           const hash = await wc.writeContract({
             address: CTF, abi: ctfAbi, functionName: "redeemPositions",
-            args: [USDC, ZERO, pos.conditionId as `0x${string}`, [BigInt(1), BigInt(2)]],
+            args: [USDC, ZERO, pos.conditionId as `0x${string}`, [indexSet]],
           });
           await pc.waitForTransactionReceipt({ hash });
           claimedConditionIds.add(pos.conditionId);
-          console.log(`[AutoRedeem] ✅ Claimed: ${pos.title.slice(0, 40)} — TX: ${hash}`);
+          console.log(`[AutoRedeem] ✅ CTF claimed: ${pos.title.slice(0, 40)} — TX: ${hash}`);
         }
       } catch (e) {
         console.error(`[AutoRedeem] ❌ Failed: ${pos.title.slice(0, 40)} — ${e instanceof Error ? e.message.slice(0, 80) : e}`);
