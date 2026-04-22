@@ -91,22 +91,48 @@ export interface WeatherArbResult {
   timestamp: string;
 }
 
-// ── Forecast fetcher ────────────────────────────────────────────────────────
+// ── Forecast fetcher (with 3-hour cache) ────────────────────────────────────
+//
+// Open-Meteo free tier = 10,000 API calls/day. Without caching, the bot's
+// 60s scan × 26 cities burns through that in ~6 hours.
+// Forecasts only update every 3-6 hours upstream, so caching for 3 hours
+// is safe and drops our daily call count from ~37k to ~208.
+
+const CACHE_TTL_MS = 3 * 60 * 60 * 1000; // 3 hours
+const forecastCache = new Map<string, { forecasts: WeatherForecast[]; timestamp: number }>();
 
 async function getForecast(city: string): Promise<WeatherForecast[]> {
   const info = CITIES[city.toLowerCase()];
   if (!info) return [];
 
+  // Cache hit? Return immediately, no API call.
+  const cached = forecastCache.get(city.toLowerCase());
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    // Recompute confidence since "days ahead" shifts as time passes
+    return cached.forecasts.map(f => {
+      const daysAhead = Math.max(0, Math.ceil((new Date(f.date).getTime() - Date.now()) / 86_400_000));
+      const confidence = daysAhead === 0 ? 0.95 : daysAhead === 1 ? 0.85 : 0.70;
+      return { ...f, confidence };
+    });
+  }
+
   try {
     const data = await httpGet<{
       daily: { time: string[]; temperature_2m_max: number[]; temperature_2m_min: number[] };
+      error?: boolean;
+      reason?: string;
     }>(`https://api.open-meteo.com/v1/forecast?latitude=${info.lat}&longitude=${info.lon}&daily=temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=3`);
 
-    return data.daily.time.map((date, i) => {
+    // Rate limit or API error — keep stale cache if we have it, else empty
+    if (data.error || !data.daily || !Array.isArray(data.daily.time)) {
+      if (data.reason) console.error(`[Oracle] Open-Meteo error for ${city}: ${data.reason}`);
+      return cached ? cached.forecasts : [];
+    }
+
+    const forecasts = data.daily.time.map((date, i) => {
       const highC = data.daily.temperature_2m_max[i];
       const lowC = data.daily.temperature_2m_min[i];
       const daysAhead = Math.max(0, Math.ceil((new Date(date).getTime() - Date.now()) / 86_400_000));
-      // Confidence decays with forecast horizon
       const confidence = daysAhead === 0 ? 0.95 : daysAhead === 1 ? 0.85 : 0.70;
 
       return {
@@ -119,8 +145,16 @@ async function getForecast(city: string): Promise<WeatherForecast[]> {
         confidence,
       };
     });
-  } catch {
-    return [];
+
+    // Only cache fresh data if we actually got values
+    if (forecasts.length > 0 && forecasts.every(f => typeof f.highTempC === "number" && !isNaN(f.highTempC))) {
+      forecastCache.set(city.toLowerCase(), { forecasts, timestamp: Date.now() });
+    }
+    return forecasts;
+  } catch (e) {
+    console.error(`[Oracle] getForecast(${city}) failed:`, e instanceof Error ? e.message : e);
+    // Fall back to stale cache if available (better than nothing)
+    return cached ? cached.forecasts : [];
   }
 }
 
