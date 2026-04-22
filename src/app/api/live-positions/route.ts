@@ -65,11 +65,11 @@ export async function GET(req: Request) {
       conditionId: string; redeemable: boolean;
     }>>(`https://data-api.polymarket.com/positions?user=${eoa}&sizeThreshold=0`);
 
-    // Trust on-chain state: if data API shows currentValue > 0, position is real.
-    // The previous hardcoded claimedIds list caused actually-still-redeemable
-    // positions (Taipei, Moscow 9C, Singapore 33°C+, Moscow 11C) to be hidden
-    // from the UI even though the wallet still held the tokens.
-    const activePositions = (rawPositions || []).filter(p => p.currentValue > 0.01);
+    // Show every position the wallet still holds tokens for — including losers
+    // at $0 value that haven't been redeemed yet (so user knows to clean up).
+    // Previously filtered by `currentValue > 0.01` which hid resolved-NO positions.
+    // Now: if size > 0 (wallet holds shares), show it.
+    const activePositions = (rawPositions || []).filter(p => (p.size || 0) > 0.01);
 
     const positions = activePositions.map(p => ({
       tokenId: p.asset,
