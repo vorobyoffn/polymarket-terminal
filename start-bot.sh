@@ -24,16 +24,24 @@ for i in $(seq 1 30); do
   fi
 done
 
-# Start the auto-trader in live mode
+# Start the auto-trader in live mode with current config
 sleep 5
 curl -s -X POST "http://localhost:3001/api/auto-trade" \
   -H "Content-Type: application/json" \
-  -d '{"action":"start","mode":"live","bankroll":562,"scanIntervalSec":60,"minLor":0.5,"minEdge":0.03,"maxConcurrentTrades":5}'
+  -d '{"action":"start","mode":"live","bankroll":1000,"scanIntervalSec":60,"minLor":0.5,"minEdge":0.03,"maxConcurrentTrades":20}'
+
+# Enable auto-exit (cut losses on edge flip or forecast divergence)
+sleep 1
+curl -s -X POST "http://localhost:3001/api/auto-trade" \
+  -H "Content-Type: application/json" \
+  -d '{"action":"set_auto_exit","enabled":true}'
 
 echo ""
 echo "🟢 Auto-trader running in LIVE mode"
+echo "   Bankroll: \$1000 | Max concurrent: 20 | Daily cap: 70% | Alloc cap: 75% | Per-trade: 8%"
+echo "   Auto-exit: ENABLED (edge<-8% or prob<5%)"
 echo "   Scanning every 60 seconds"
-echo "   Dashboard: http://localhost:3001/btc"
+echo "   Dashboard: http://localhost:3001"
 echo ""
 
 # Keep running until Ctrl+C
