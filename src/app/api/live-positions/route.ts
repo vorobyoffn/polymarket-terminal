@@ -65,21 +65,17 @@ export async function GET(req: Request) {
       conditionId: string; redeemable: boolean;
     }>>(`https://data-api.polymarket.com/positions?user=${eoa}&sizeThreshold=0`);
 
-    // Show positions the wallet still holds. Hide old losers (value=$0, expired >48h ago)
-    // since they're just visual clutter — user can still see them via ?showOldLosers=true.
-    const showOldLosers = url.searchParams.get("showOldLosers") === "true";
-    const HIDE_LOSER_AFTER_MS = 48 * 60 * 60 * 1000;
-    const now = Date.now();
+    // Show only positions with actual value. Hide fully-lost positions
+    // (currentValue = $0) regardless of how old — they're just clutter since
+    // redeeming a loser pays $0 anyway. Pass ?showLosers=true to see them.
+    const showLosers = url.searchParams.get("showLosers") === "true";
 
     const activePositions = (rawPositions || []).filter(p => {
       if ((p.size || 0) <= 0.01) return false;  // no tokens in wallet
-      if (showOldLosers) return true;
+      if (showLosers) return true;
 
-      // Hide "old losers": value=$0 AND expired >48h ago
-      const isZeroValue = (p.currentValue || 0) <= 0.01;
-      const endMs = p.endDate ? new Date(p.endDate).getTime() : Infinity;
-      const isOldLoser = isZeroValue && endMs > 0 && (now - endMs) > HIDE_LOSER_AFTER_MS;
-      return !isOldLoser;
+      // Hide any position whose current value is effectively $0 (market lost)
+      return (p.currentValue || 0) > 0.01;
     });
 
     const positions = activePositions.map(p => ({
