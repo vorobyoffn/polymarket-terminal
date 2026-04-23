@@ -99,7 +99,11 @@ export async function GET(req: Request) {
     const redeemedPositions = positions
       .filter(p => p.curPrice <= 0.01 || p.curPrice >= 0.99 || claimedConditionIds.has(p.conditionId))
       .map(p => {
-        const won = p.curPrice >= 0.99;
+        // Correct win logic: YES won means curPrice high; NO won means curPrice low.
+        // Previous code always used curPrice >= 0.99 which miscounted every NO win as a loss.
+        const won = p.outcome === "Yes"
+          ? p.curPrice >= 0.99
+          : p.curPrice <= 0.01;
         const claimed = claimedConditionIds.has(p.conditionId);
         const payout = won ? p.size : 0;
         return {
@@ -215,6 +219,24 @@ export async function GET(req: Request) {
         totalPortfolio: Math.round((walletUsdc + totalCurrent) * 100) / 100,
         startingCapital,
         totalReturn: Math.round(((walletUsdc + totalCurrent) / startingCapital - 1) * 10000) / 100,
+
+        // ── Win rate stats (from redeemed/resolved positions) ──
+        wonCount: redeemedPositions.filter(p => p.won).length,
+        lostCount: redeemedPositions.filter(p => !p.won).length,
+        resolvedCount: redeemedPositions.length,
+        winRate: redeemedPositions.length > 0
+          ? Math.round(redeemedPositions.filter(p => p.won).length / redeemedPositions.length * 10000) / 100
+          : 0,
+        avgWinProfit: (() => {
+          const wins = redeemedPositions.filter(p => p.won);
+          if (wins.length === 0) return 0;
+          return Math.round(wins.reduce((s, p) => s + p.profit, 0) / wins.length * 100) / 100;
+        })(),
+        avgLossAmount: (() => {
+          const losses = redeemedPositions.filter(p => !p.won);
+          if (losses.length === 0) return 0;
+          return Math.round(losses.reduce((s, p) => s + p.profit, 0) / losses.length * 100) / 100;
+        })(),
       },
     });
   } catch (err) {

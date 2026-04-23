@@ -37,6 +37,8 @@ interface PerfData {
     positions: number; resolved: number; realizedPnl: number;
     claimableAmount: number; pendingSettlement: number;
     walletUsdc: number; totalPortfolio: number; startingCapital: number; totalReturn: number;
+    wonCount?: number; lostCount?: number; resolvedCount?: number;
+    winRate?: number; avgWinProfit?: number; avgLossAmount?: number;
   };
 }
 
@@ -130,16 +132,22 @@ export default function PerformancePage() {
                 </div>
               </div>
               <div>
-                <div className="text-text-muted text-[10px] uppercase tracking-wider mb-1">Profit Factor</div>
-                <div className={`text-lg font-mono font-bold tnum ${profitFactor >= 1.5 ? "text-accent-green" : profitFactor >= 1 ? "text-accent-yellow" : "text-accent-red"}`}>
-                  {profitFactor === Infinity ? "∞" : profitFactor.toFixed(2)}x
+                <div className="text-text-muted text-[10px] uppercase tracking-wider mb-1">Win Rate</div>
+                <div className={`text-lg font-mono font-bold tnum ${(t.winRate ?? 0) >= 40 ? "text-accent-green" : (t.winRate ?? 0) >= 20 ? "text-accent-yellow" : "text-accent-red"}`}>
+                  {(t.winRate ?? 0).toFixed(1)}%
                 </div>
-                <div className="text-text-muted text-[10px]">Win/Loss: {allWinners.length}W / {allLosers.length}L</div>
+                <div className="text-text-muted text-[10px]">
+                  {t.wonCount ?? 0}W / {t.lostCount ?? 0}L of {t.resolvedCount ?? 0} resolved
+                </div>
               </div>
               <div>
-                <div className="text-text-muted text-[10px] uppercase tracking-wider mb-1">Status</div>
-                <div className="text-lg font-mono tnum">{t.positions} pos</div>
-                <div className="text-text-muted text-[10px]">{t.resolved} resolved · {t.pendingSettlement} pending</div>
+                <div className="text-text-muted text-[10px] uppercase tracking-wider mb-1">Realized P&L</div>
+                <div className={`text-lg font-mono font-bold tnum ${pc(t.realizedPnl)}`}>
+                  {t.realizedPnl >= 0 ? "+" : ""}${t.realizedPnl.toFixed(2)}
+                </div>
+                <div className="text-text-muted text-[10px]">
+                  PF {profitFactor === Infinity ? "∞" : profitFactor.toFixed(2)}x · {t.positions} pos · {t.pendingSettlement} pending
+                </div>
               </div>
             </div>
           </div>
