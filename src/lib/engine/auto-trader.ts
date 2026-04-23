@@ -1081,8 +1081,8 @@ async function scanAndTrade() {
       if (executed >= slotsAvailable) break;
       if (tradedMarkets.has(signal.marketId)) continue;
 
-      // Max 50% of bankroll allocated at any time (on-chain aware)
-      if (totalAllocated + (signal.recommendedBet || 0) > state.bankroll * 0.50) {
+      // Max 75% of bankroll allocated at any time (on-chain aware)
+      if (totalAllocated + (signal.recommendedBet || 0) > state.bankroll * 0.75) {
         console.log(`[AutoTrader] Portfolio limit reached: $${totalAllocated.toFixed(0)} allocated (on-chain: $${onChainAllocated.toFixed(0)})`);
         break;
       }
