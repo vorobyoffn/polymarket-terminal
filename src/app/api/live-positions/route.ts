@@ -65,16 +65,25 @@ export async function GET(req: Request) {
       conditionId: string; redeemable: boolean;
     }>>(`https://data-api.polymarket.com/positions?user=${eoa}&sizeThreshold=0`);
 
-    // Show only positions with actual value. Hide fully-lost positions
-    // (currentValue = $0) regardless of how old — they're just clutter since
-    // redeeming a loser pays $0 anyway. Pass ?showLosers=true to see them.
+    // Show positions with value OR unclaimed NO-side winners.
+    // Polymarket's data API reports currentValue = size × YES_price, which is
+    // $0 for NO winners (YES price resolved to 0). Those aren't losers — they're
+    // redeemable winnings worth size × $1. Don't hide them.
     const showLosers = url.searchParams.get("showLosers") === "true";
 
     const activePositions = (rawPositions || []).filter(p => {
       if ((p.size || 0) <= 0.01) return false;  // no tokens in wallet
       if (showLosers) return true;
 
-      // Hide any position whose current value is effectively $0 (market lost)
+      // Always keep positions that are redeemable for cash (unclaimed winners)
+      if (p.redeemable) {
+        const actualWin = p.outcome === "Yes"
+          ? p.curPrice >= 0.99
+          : p.curPrice <= 0.01;
+        if (actualWin) return true;
+      }
+
+      // Hide any position whose current value is effectively $0 AND isn't a NO-win
       return (p.currentValue || 0) > 0.01;
     });
 

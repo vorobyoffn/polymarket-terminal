@@ -575,7 +575,13 @@ function PositionRow({ pos, isExpanded, isOdd, onToggle, onRefresh }: {
   const priceChange = pos.curPrice - pos.avgPrice;
   const isUp = priceChange >= 0;
   const isResolved = pos.redeemable || pos.curPrice >= 0.99 || pos.curPrice <= 0.01;
-  const isWinner = pos.curPrice >= 0.99;
+  // Outcome-aware winner detection: YES wins at curPrice>=0.99, NO wins at curPrice<=0.01.
+  // Polymarket's data API's `currentValue` is $0 for NO wins (size × YES_price),
+  // but the true claimable payout is `size × $1`.
+  const isWinner = pos.outcome === "Yes"
+    ? pos.curPrice >= 0.99
+    : pos.curPrice <= 0.01;
+  const claimablePayout = isWinner ? pos.size : 0;
   const [action, setAction] = useState<{ status: "idle" | "submitting" | "success" | "error"; msg?: string }>({ status: "idle" });
 
   const { isConnected } = useAccount();
@@ -689,7 +695,7 @@ function PositionRow({ pos, isExpanded, isOdd, onToggle, onRefresh }: {
 
   const handleRedeem = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    const label = isWinner ? `Redeem ${pos.outcome} on "${pos.title}"?\n\nThis will claim ~$${pos.currentValue.toFixed(2)} via an on-chain transaction.` : `Clear losing position "${pos.title}"?\n\nThis submits an on-chain redeem (no payout — just removes from your positions list).`;
+    const label = isWinner ? `Redeem ${pos.outcome} on "${pos.title}"?\n\nThis will claim ~$${claimablePayout.toFixed(2)} via an on-chain transaction.` : `Clear losing position "${pos.title}"?\n\nThis submits an on-chain redeem (no payout — just removes from your positions list).`;
     if (!window.confirm(label)) return;
     setAction({ status: "submitting" });
 
@@ -844,7 +850,7 @@ function PositionRow({ pos, isExpanded, isOdd, onToggle, onRefresh }: {
                     ? "bg-accent-green/10 text-accent-green border-accent-green/30 hover:bg-accent-green/20"
                     : "bg-text-muted/10 text-text-muted border-text-muted/30 hover:bg-text-muted/20"
                 }`}
-                title={isWinner ? `Redeem ~$${pos.currentValue.toFixed(2)} on-chain` : "Clear $0 losing position on-chain"}
+                title={isWinner ? `Redeem ~$${claimablePayout.toFixed(2)} on-chain` : "Clear $0 losing position on-chain"}
               >
                 {action.status === "submitting" ? (
                   <>
@@ -852,7 +858,7 @@ function PositionRow({ pos, isExpanded, isOdd, onToggle, onRefresh }: {
                   </>
                 ) : isWinner ? (
                   <>
-                    <DollarSign className="w-2.5 h-2.5" /> Redeem ${pos.currentValue.toFixed(2)}
+                    <DollarSign className="w-2.5 h-2.5" /> Redeem ${claimablePayout.toFixed(2)}
                   </>
                 ) : (
                   <>
