@@ -29,6 +29,17 @@ html, body {
 ::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 2px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--color-text-muted); }
 
+/* Privacy toggle — blur any element tagged with .money when hide-balances is on.
+   Hover still shows the value so the user can peek without toggling off. */
+.hide-balances .money {
+  filter: blur(6px);
+  user-select: none;
+  transition: filter 0.2s;
+}
+.hide-balances .money:hover {
+  filter: blur(0);
+}
+
 .tnum { font-variant-numeric: tabular-nums; }
 
 .glow-green { text-shadow: 0 0 8px var(--color-accent-green); }

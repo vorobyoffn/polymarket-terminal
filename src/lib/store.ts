@@ -34,6 +34,10 @@ interface AppState {
   connectedAddress: string | null;
   setConnectedAddress: (addr: string | null) => void;
 
+  // Privacy: hide $ amounts (show blur/percentages only)
+  hideBalances: boolean;
+  setHideBalances: (hide: boolean) => void;
+
   // Settings
   privateKey: string;
   setPrivateKey: (key: string) => void;
@@ -64,6 +68,8 @@ export const useStore = create<AppState>()(
       setBalance: (balance) => set({ balance }),
       connectedAddress: null,
       setConnectedAddress: (connectedAddress) => set({ connectedAddress }),
+      hideBalances: false,
+      setHideBalances: (hideBalances) => set({ hideBalances }),
       privateKey: "",
       setPrivateKey: (privateKey) => set({ privateKey }),
       rpcUrl: "https://polygon-rpc.com",

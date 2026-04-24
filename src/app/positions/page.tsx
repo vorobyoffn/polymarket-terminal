@@ -343,7 +343,7 @@ export default function PositionsPage() {
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4">
             <div className="col-span-2">
               <div className="text-text-muted text-[10px] uppercase tracking-wider mb-1">Total Portfolio</div>
-              <div className="text-2xl font-mono font-bold text-text-primary tnum">${(walletUsdc + stats.totalCurrent).toFixed(2)}</div>
+              <div className="text-2xl font-mono font-bold text-text-primary tnum money">${(walletUsdc + stats.totalCurrent).toFixed(2)}</div>
               <div className={`text-xs font-mono tnum ${pnlColor(stats.totalPnl)}`}>
                 {stats.totalPnl >= 0 ? "+" : ""}{stats.totalPnl.toFixed(2)} ({stats.totalPnlPct >= 0 ? "+" : ""}{stats.totalPnlPct.toFixed(1)}%) unrealized
               </div>

@@ -114,23 +114,23 @@ export default function Sidebar() {
           {tradingMode === "paper" ? "PAPER MODE" : "LIVE MODE"}
           {loading && <RefreshCw className="w-2.5 h-2.5 animate-spin ml-auto opacity-40" />}
         </div>
-        <div className="text-text-primary text-lg font-mono font-bold mt-1" style={{ fontVariantNumeric: "tabular-nums" }}>
+        <div className="text-text-primary text-lg font-mono font-bold mt-1 money" style={{ fontVariantNumeric: "tabular-nums" }}>
           ${portfolio ? portfolio.totalPortfolio.toLocaleString("en-US", { minimumFractionDigits: 2 }) : displayBalance.toLocaleString("en-US", { minimumFractionDigits: 2 })}
         </div>
         {portfolio && (
           <div className={`text-[10px] font-mono mt-0.5 ${portfolio.pnl >= 0 ? "text-accent-green" : "text-accent-red"}`} style={{ fontVariantNumeric: "tabular-nums" }}>
-            {portfolio.pnl >= 0 ? "+" : ""}${portfolio.pnl.toFixed(2)} ({portfolio.pnlPct >= 0 ? "+" : ""}{portfolio.pnlPct.toFixed(1)}%) unrealized
+            <span className="money">{portfolio.pnl >= 0 ? "+" : ""}${portfolio.pnl.toFixed(2)}</span> ({portfolio.pnlPct >= 0 ? "+" : ""}{portfolio.pnlPct.toFixed(1)}%) unrealized
           </div>
         )}
         {tradingMode === "live" && walletBal && (
           <div className="text-text-muted text-[9px] font-mono mt-1.5 space-y-0.5">
             <div className="flex justify-between">
               <span>Cash:</span>
-              <span>${walletBal.totalUsdc.toFixed(2)}</span>
+              <span className="money">${walletBal.totalUsdc.toFixed(2)}</span>
             </div>
             <div className="flex justify-between">
               <span>Positions:</span>
-              <span>${portfolio ? portfolio.current.toFixed(2) : "\u2014"}</span>
+              <span className="money">${portfolio ? portfolio.current.toFixed(2) : "\u2014"}</span>
             </div>
           </div>
         )}
@@ -188,7 +188,7 @@ export default function Sidebar() {
           <span className="font-bold text-xs tracking-wider" style={{ color: "#e8751a" }}>ARRAKIS</span>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-text-primary text-sm font-mono font-bold" style={{ fontVariantNumeric: "tabular-nums" }}>
+          <span className="text-text-primary text-sm font-mono font-bold money" style={{ fontVariantNumeric: "tabular-nums" }}>
             ${portfolio ? portfolio.totalPortfolio.toLocaleString("en-US", { minimumFractionDigits: 2 }) : displayBalance.toLocaleString("en-US", { minimumFractionDigits: 2 })}
           </span>
           <button onClick={() => setMobileOpen(true)} className="p-1">

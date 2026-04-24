@@ -114,7 +114,7 @@ export default function PerformancePage() {
             <div className="grid grid-cols-5 gap-5">
               <div>
                 <div className="text-text-muted text-[10px] uppercase tracking-wider mb-1">Total Portfolio</div>
-                <div className="text-2xl font-mono font-bold text-text-primary tnum">${t.totalPortfolio.toFixed(2)}</div>
+                <div className="text-2xl font-mono font-bold text-text-primary tnum money">${t.totalPortfolio.toFixed(2)}</div>
                 <div className={`text-xs font-mono tnum ${pc(t.totalReturn)}`}>
                   {t.totalReturn >= 0 ? "+" : ""}{t.totalReturn.toFixed(1)}% from ${t.startingCapital}
                 </div>

@@ -111,7 +111,7 @@ export default function Dashboard() {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-6">
             <div>
               <div className="text-text-muted text-[10px] uppercase tracking-wider mb-1">Total Portfolio</div>
-              <div className="text-3xl font-mono font-bold text-text-primary tnum">${totalPortfolio.toFixed(2)}</div>
+              <div className="text-3xl font-mono font-bold text-text-primary tnum money">${totalPortfolio.toFixed(2)}</div>
               {stats && (
                 <div className={`text-sm font-mono tnum mt-1 ${stats.totalPnl >= 0 ? "text-accent-green" : "text-accent-red"}`}>
                   {stats.totalPnl >= 0 ? "+" : ""}{stats.totalPnl.toFixed(2)} ({stats.totalPnlPct >= 0 ? "+" : ""}{stats.totalPnlPct.toFixed(1)}%) unrealized
@@ -120,12 +120,12 @@ export default function Dashboard() {
             </div>
             <div>
               <div className="text-text-muted text-[10px] uppercase tracking-wider mb-1">Cash Available</div>
-              <div className="text-2xl font-mono font-bold text-text-primary tnum">${walletUsdc.toFixed(2)}</div>
+              <div className="text-2xl font-mono font-bold text-text-primary tnum money">${walletUsdc.toFixed(2)}</div>
               <div className="text-text-muted text-[10px] mt-1">USDC.e on Polygon</div>
             </div>
             <div>
               <div className="text-text-muted text-[10px] uppercase tracking-wider mb-1">Positions Value</div>
-              <div className="text-2xl font-mono font-bold text-text-primary tnum">${(stats?.totalCurrent || 0).toFixed(2)}</div>
+              <div className="text-2xl font-mono font-bold text-text-primary tnum money">${(stats?.totalCurrent || 0).toFixed(2)}</div>
               <div className="text-text-muted text-[10px] mt-1">{stats?.totalPositions || 0} active positions</div>
             </div>
             <div>
