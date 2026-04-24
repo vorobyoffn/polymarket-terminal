@@ -161,10 +161,12 @@ export async function GET(req: Request) {
     const displayPositions = positions.filter(p => !claimedConditionIds.has(p.conditionId) && p.currentValue > 0.01);
 
     // Equity curve: starting capital, then add each position's P&L sorted by end date
-    const startingCapital = 518; // what we started with
+    // Total deposits across all top-ups this session:
+    //   $633 on Apr 12 (initial) + $141 on Apr 14 + $264 on Apr 22 = $1,038
+    const startingCapital = 1038;
     const sortedByDate = [...positions].sort((a, b) => (a.endDate || "").localeCompare(b.endDate || ""));
     let equity = startingCapital;
-    const equityCurve = [{ date: "Start", value: startingCapital, label: "Initial \$518 deposit" }];
+    const equityCurve = [{ date: "Start", value: startingCapital, label: `Total deposits: $${startingCapital}` }];
 
     // Group by date for equity curve
     const dateGroups: Record<string, { pnl: number; count: number; invested: number }> = {};
