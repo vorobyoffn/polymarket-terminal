@@ -330,10 +330,18 @@ export async function runWeatherArbScan(): Promise<WeatherArbResult> {
       ? (daysAhead === 0 ? 2.0 : daysAhead === 1 ? 3.5 : 5.0)  // °F
       : (daysAhead === 0 ? 1.2 : daysAhead === 1 ? 2.0 : 3.0);  // °C
 
+    // Strategy fix: disable EXACT-band bets entirely — historical data shows
+    // 13% win rate on these vs 33% on above/below. Model is overconfident on
+    // point-forecast predictions and market prices better than we can.
+    if (parsed.targetType === "exact") continue;
+
     const forecastProb = tempProbability(forecastHigh, parsed.targetTemp, parsed.targetType, sigma, parsed.rangeLow, parsed.rangeHigh);
 
+    // Strategy fix: raised from 5% to 12% minimum edge. Only take highest-
+    // conviction signals. Historical 10-20¢ entries had 5.7% WR (needed 15%
+    // to break even), meaning small-edge trades are losing systematically.
     const edge = Math.abs(forecastProb - yesPrice);
-    if (edge < 0.05) continue; // minimum 5% edge
+    if (edge < 0.12) continue;
 
     const direction: "BUY_YES" | "BUY_NO" = forecastProb > yesPrice ? "BUY_YES" : "BUY_NO";
     const daysToExpiry = Math.max(0, Math.ceil((new Date(parsed.date).getTime() - Date.now()) / 86_400_000));

@@ -906,7 +906,7 @@ async function scanAndTrade() {
       const weatherResult = await runWeatherArbScan();
       rawWeatherSignals = weatherResult.signals;
       weatherSignals = weatherResult.signals
-        .filter((s: WeatherSignal) => s.edge >= 0.10 && s.confidence >= 0.70)
+        .filter((s: WeatherSignal) => s.edge >= 0.12 && s.confidence >= 0.70 && s.targetType !== "exact")
         .filter((s: WeatherSignal) => !tradedMarkets.has(s.marketId))
         .map((s: WeatherSignal): BtcSignal => ({
           marketId: s.marketId,
