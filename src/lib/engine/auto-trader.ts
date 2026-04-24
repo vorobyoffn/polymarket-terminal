@@ -683,7 +683,43 @@ async function executeExitSellInternal(trigger: SellTrigger): Promise<{ ok: bool
       price = Math.floor(bestBid / tick) * tick;
     }
 
-    console.log(`[Sell] Placing SELL ${trigger.tokenId.slice(0, 12)}... @ ${price} size=${trigger.size.toFixed(2)} reason=${trigger.reason}`);
+    // Verify actual on-chain balance before selling — Polymarket data API can
+    // be stale and report shares that no longer exist (e.g., after a redeem).
+    let actualSize = trigger.size;
+    try {
+      const { createPublicClient, http, parseAbi } = await import("viem");
+      const { privateKeyToAccount } = await import("viem/accounts");
+      const { polygon } = await import("viem/chains");
+      const pk = process.env.PRIVATE_KEY;
+      if (pk) {
+        const normalizedKey = pk.startsWith("0x") ? pk : `0x${pk}`;
+        const account = privateKeyToAccount(normalizedKey as `0x${string}`);
+        const rpc = process.env.POLYGON_RPC_URL || "https://polygon-bor-rpc.publicnode.com";
+        const pc = createPublicClient({ chain: polygon, transport: http(rpc, { timeout: 15000 }) });
+        const CTF = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045" as const;
+        const ctfAbi = parseAbi(["function balanceOf(address owner, uint256 id) view returns (uint256)"]);
+        const balanceAtoms = (await pc.readContract({
+          address: CTF,
+          abi: ctfAbi,
+          functionName: "balanceOf",
+          args: [account.address, BigInt(trigger.tokenId)],
+        })) as bigint;
+        const onChainShares = Number(balanceAtoms) / 1_000_000;
+        if (onChainShares < 0.01) {
+          console.log(`[Sell] ❌ Skip — wallet holds ${onChainShares} shares (data API reported ${trigger.size.toFixed(2)}). Already sold/redeemed.`);
+          return { ok: false, error: "No on-chain shares to sell" };
+        }
+        if (onChainShares < trigger.size * 0.9) {
+          // Cap sell size to actual holdings, minus tiny buffer for rounding
+          actualSize = Math.floor(onChainShares * 100) / 100;
+          console.log(`[Sell] ⚠ Adjusted size from ${trigger.size.toFixed(2)} to ${actualSize.toFixed(2)} (on-chain balance)`);
+        }
+      }
+    } catch (e) {
+      console.error(`[Sell] balanceOf check failed, proceeding with trigger.size: ${e instanceof Error ? e.message : e}`);
+    }
+
+    console.log(`[Sell] Placing SELL ${trigger.tokenId.slice(0, 12)}... @ ${price} size=${actualSize.toFixed(2)} reason=${trigger.reason}`);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const order = await (authedClient as any).createAndPostOrder(
@@ -691,7 +727,7 @@ async function executeExitSellInternal(trigger: SellTrigger): Promise<{ ok: bool
         tokenID: trigger.tokenId,
         price,
         side: "SELL",
-        size: trigger.size,
+        size: actualSize,
       },
       { tickSize, negRisk: trigger.negRisk },
       "GTC"
