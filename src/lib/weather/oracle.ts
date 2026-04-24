@@ -339,6 +339,28 @@ export async function runWeatherArbScan(): Promise<WeatherArbResult> {
     if (edge < 0.12) continue;
 
     const direction: "BUY_YES" | "BUY_NO" = forecastProb > yesPrice ? "BUY_YES" : "BUY_NO";
+
+    // ── Tiered filter for EXACT bands (historical 13% WR → use high-conviction only) ──
+    // Trade exact-band only when we're highly confident in what the forecast says.
+    // Same-day/next-day forecasts only; forecast must clearly match (for YES) or
+    // clearly miss (for NO) the target — no middle ground where we're just guessing.
+    if (parsed.targetType === "exact") {
+      const tempGap = Math.abs(forecastHigh - parsed.targetTemp);  // in market's unit
+      const gapC = parsed.unit === "F" ? tempGap / 1.8 : tempGap;
+      const highConfidenceHorizon = daysAhead <= 1;  // only today/tomorrow
+
+      if (!highConfidenceHorizon) continue;  // >1 day out = too uncertain for exact
+
+      if (direction === "BUY_YES") {
+        // BUY_YES on exact = we're confident temp will hit this band.
+        // Require forecast within ±0.6°C of target (so rounds cleanly to this band).
+        if (gapC > 0.6) continue;
+      } else {
+        // BUY_NO on exact = we're confident temp will miss this band.
+        // Require forecast at least 1.5°C away (so it clearly rounds elsewhere).
+        if (gapC < 1.5) continue;
+      }
+    }
     const daysToExpiry = Math.max(0, Math.ceil((new Date(parsed.date).getTime() - Date.now()) / 86_400_000));
     const vol24h = (market.volume24hr as number) || 0;
 
