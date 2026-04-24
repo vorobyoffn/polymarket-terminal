@@ -330,11 +330,6 @@ export async function runWeatherArbScan(): Promise<WeatherArbResult> {
       ? (daysAhead === 0 ? 2.0 : daysAhead === 1 ? 3.5 : 5.0)  // °F
       : (daysAhead === 0 ? 1.2 : daysAhead === 1 ? 2.0 : 3.0);  // °C
 
-    // Strategy fix: disable EXACT-band bets entirely — historical data shows
-    // 13% win rate on these vs 33% on above/below. Model is overconfident on
-    // point-forecast predictions and market prices better than we can.
-    if (parsed.targetType === "exact") continue;
-
     const forecastProb = tempProbability(forecastHigh, parsed.targetTemp, parsed.targetType, sigma, parsed.rangeLow, parsed.rangeHigh);
 
     // Strategy fix: raised from 5% to 12% minimum edge. Only take highest-
