@@ -87,28 +87,45 @@ export async function GET(req: Request) {
       return (p.currentValue || 0) > 0.01;
     });
 
-    const positions = activePositions.map(p => ({
-      tokenId: p.asset,
-      title: p.title,
-      slug: p.slug,
-      icon: p.icon,
-      eventSlug: p.eventSlug,
-      outcome: p.outcome,
-      outcomeIndex: p.outcomeIndex,
-      endDate: p.endDate,
-      size: p.size,
-      avgPrice: Math.round(p.avgPrice * 10000) / 10000,
-      curPrice: Math.round(p.curPrice * 10000) / 10000,
-      initialValue: Math.round(p.initialValue * 100) / 100,
-      currentValue: Math.round(p.currentValue * 100) / 100,
-      cashPnl: Math.round(p.cashPnl * 100) / 100,
-      percentPnl: Math.round(p.percentPnl * 100) / 100,
-      totalBought: p.totalBought,
-      realizedPnl: Math.round(p.realizedPnl * 100) / 100,
-      negativeRisk: p.negativeRisk,
-      conditionId: p.conditionId,
-      redeemable: p.redeemable,
-    }));
+    const positions = activePositions.map(p => {
+      // Polymarket's API reports currentValue = size × YES_price, which is $0
+      // for NO-side winners (YES resolved to 0). That's wrong — the position is
+      // actually worth size × $1 in USDC once redeemed. Override for unclaimed
+      // winners so the UI sorts / displays them correctly.
+      const sideWon = p.outcome === "Yes"
+        ? p.curPrice >= 0.99
+        : p.curPrice <= 0.01;
+      const isUnclaimedWinner = p.redeemable && sideWon;
+
+      const displayCurrentValue = isUnclaimedWinner ? p.size : p.currentValue;
+      const displayCashPnl = isUnclaimedWinner ? (p.size - p.initialValue) : p.cashPnl;
+      const displayPercentPnl = isUnclaimedWinner && p.initialValue > 0
+        ? ((p.size - p.initialValue) / p.initialValue) * 100
+        : p.percentPnl;
+
+      return {
+        tokenId: p.asset,
+        title: p.title,
+        slug: p.slug,
+        icon: p.icon,
+        eventSlug: p.eventSlug,
+        outcome: p.outcome,
+        outcomeIndex: p.outcomeIndex,
+        endDate: p.endDate,
+        size: p.size,
+        avgPrice: Math.round(p.avgPrice * 10000) / 10000,
+        curPrice: Math.round(p.curPrice * 10000) / 10000,
+        initialValue: Math.round(p.initialValue * 100) / 100,
+        currentValue: Math.round(displayCurrentValue * 100) / 100,
+        cashPnl: Math.round(displayCashPnl * 100) / 100,
+        percentPnl: Math.round(displayPercentPnl * 100) / 100,
+        totalBought: p.totalBought,
+        realizedPnl: Math.round(p.realizedPnl * 100) / 100,
+        negativeRisk: p.negativeRisk,
+        conditionId: p.conditionId,
+        redeemable: p.redeemable,
+      };
+    });
 
     // ── 2. Fetch open orders from CLOB ──
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
